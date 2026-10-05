@@ -22,6 +22,12 @@ const Art = {
   /** Manifest entries, keyed `kind/id`. */
   entries: new Map(),
 
+  /** Manifest entries grouped by kind, in manifest order. */
+  byKind: new Map(),
+
+  /** Expression ids the server supports, in its own order. */
+  expressionIds: ['neutral', 'hurt', 'victory'],
+
   loaded: false,
   loading: null,
 
@@ -45,8 +51,14 @@ const Art = {
     this.loading = fetch('/api/art')
       .then((res) => res.json())
       .then((data) => {
+        this.byKind.clear();
         for (const entry of data.entries || []) {
           this.entries.set(`${entry.kind}/${entry.id}`, entry);
+          if (!this.byKind.has(entry.kind)) this.byKind.set(entry.kind, []);
+          this.byKind.get(entry.kind).push(entry);
+        }
+        if (Array.isArray(data.expressions) && data.expressions.length) {
+          this.expressionIds = data.expressions;
         }
         this.loaded = true;
         return this;
@@ -71,6 +83,25 @@ const Art = {
 
   get(kind, id) {
     return this.entries.get(`${kind}/${id}`) || null;
+  },
+
+  /** Every entry of one kind, in the order the server listed them. */
+  list(kind) {
+    return (this.byKind.get(kind) || []).slice();
+  },
+
+  /** Expression ids, e.g. for building a comparison strip. */
+  expressions() {
+    return this.expressionIds.slice();
+  },
+
+  expressionLabel(id) {
+    return {
+      neutral: '平静',
+      focus: '专注',
+      hurt: '受击',
+      victory: '胜利',
+    }[id] || id;
   },
 
   /**

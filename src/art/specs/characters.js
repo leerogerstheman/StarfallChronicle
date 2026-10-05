@@ -359,6 +359,7 @@ function characterArt(id) {
     element: base.element,
     role: base.role,
     rarity: base.rarity,
+    lore: base.lore,
     accent: base.color,
   };
 }

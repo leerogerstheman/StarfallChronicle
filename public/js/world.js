@@ -91,6 +91,13 @@ const WorldUI = {
           actions.push(el('button.btn.btn-ghost', { onclick: () => this.openParty() }, '👥 队伍编成'));
         }
       }
+      // The gallery, reachable in one click from town. It used to live only
+      // inside the party screen, which meant the only way to look at the
+      // character art was to open a screen about equipment.
+      actions.push(el('button.btn.btn-ghost', {
+        onclick: () => this.openCodex('art'),
+        title: '查看角色立绘、敌人插画与全部资料',
+      }, '📖 图鉴'));
       if (view.restBonus) {
         actions.push(el('span.tag', {
           text: `已获得「${view.restBonus}」：下一场战斗生效`,
@@ -274,7 +281,7 @@ const WorldUI = {
       el('div.party-grid', null, (view.party.members || []).map((m) => this.memberCard(m, build))),
       el('div.row', { style: { marginTop: '18px', gap: '10px' } }, [
         el('button.btn.btn-primary', { onclick: () => this.openShop() }, '前往军需处购买装备'),
-        el('button.btn.btn-ghost', { onclick: () => this.openCodex() }, '查看技能图鉴'),
+        el('button.btn.btn-ghost', { onclick: () => this.openCodex('art') }, '📖 查看立绘'),
       ]),
     ]);
     Modal.open('队伍编成 / PARTY', build());
@@ -323,7 +330,11 @@ const WorldUI = {
     });
 
     return el('div.member-card', { class: m.active ? 'is-active' : null }, [
-      el('div.member-art', { class: standing ? 'has-art' : null }, [
+      el('div.member-art', {
+        class: standing ? 'has-art is-clickable' : null,
+        onclick: standing ? () => this.viewArt('character', m.charId) : null,
+        title: standing ? `放大查看 ${m.name}` : null,
+      }, [
         standing || el('div.member-art-empty', { text: m.name.slice(0, 1) }),
       ]),
       el('div.member-body', null, [
@@ -497,19 +508,31 @@ const WorldUI = {
   // Codex
   // =======================================================================
 
-  openCodex() {
+  /**
+   * The codex, with the art gallery as its first tab.
+   *
+   * The art used to be reachable only as decoration: a 34px circle on an NPC
+   * card, a 54px circle in battle, and a 96px side column inside the party
+   * screen. There was nowhere in the game to actually *look* at a character —
+   * which is a strange thing for a game with five hand-built character sheets
+   * to be true of. The gallery is that place.
+   */
+  openCodex(initial = 'art') {
     const data = State.data || {};
     const tabs = el('div.row', { style: { marginBottom: '16px', gap: '8px', flexWrap: 'wrap' } });
     const content = el('div');
 
     const show = (kind) => {
       swap(tabs, [
+        tabButton('形象', kind === 'art', () => show('art')),
+        tabButton('敌人', kind === 'enemies', () => show('enemies')),
         tabButton('技能', kind === 'skills', () => show('skills')),
         tabButton('状态效果', kind === 'statuses', () => show('statuses')),
-        tabButton('敌人', kind === 'enemies', () => show('enemies')),
         tabButton('装备', kind === 'equipment', () => show('equipment')),
       ]);
-      if (kind === 'skills') {
+      if (kind === 'art') {
+        swap(content, this.artGallery());
+      } else if (kind === 'skills') {
         swap(content, el('table.help-table', null, [
           el('tr', null, [el('th', { text: '' }), el('th', { text: '名称' }), el('th', { text: '类型' }),
             el('th', { text: '属性' }), el('th', { text: '削韧' }), el('th', { text: '说明' })]),
@@ -534,10 +557,18 @@ const WorldUI = {
         ]));
       } else if (kind === 'enemies') {
         swap(content, el('table.help-table', null, [
-          el('tr', null, [el('th', { text: '名称' }), el('th', { text: '等级' }), el('th', { text: '弱点' }),
-            el('th', { text: '韧性' }), el('th', { text: '抵抗' })]),
+          el('tr', null, [el('th', { text: '' }), el('th', { text: '名称' }), el('th', { text: '等级' }),
+            el('th', { text: '弱点' }), el('th', { text: '韧性' }), el('th', { text: '抵抗' })]),
           ...(data.enemies || []).map((e) => el('tr', null, [
-            el('td', { text: e.name }),
+            el('td', null, [
+              Art.image('enemy', e.id, {
+                className: 'codex-thumb', view: 'bust', plain: true, alt: e.name,
+              }) || el('span', { text: '·' }),
+            ]),
+            el('td', null, [
+              el('div', { text: e.name }),
+              e.title ? el('div.codex-sub', { text: e.title }) : null,
+            ]),
             el('td', { text: `Lv ${e.level}` }),
             el('td', { text: (e.weaknesses || []).map((w) => Fmt.element(w).icon).join(' ') || '—' }),
             el('td', { text: e.toughness ? String(e.toughness) : '—' }),
@@ -562,8 +593,178 @@ const WorldUI = {
     const tabButton = (label, active, onclick) =>
       el('button.btn.btn-small', { class: active ? 'btn-primary' : 'btn-ghost', onclick }, label);
 
-    show('skills');
+    show(initial);
     Modal.open('图鉴 / CODEX', el('div', null, [tabs, content]));
+  },
+
+  /**
+   * Every figure that has art, grouped.
+   *
+   * Read from the art manifest rather than from the gameplay data, so a figure
+   * that exists in `src/art/specs/` but not yet in the world still shows up
+   * here — which is exactly the case you want a gallery for.
+   */
+  artGallery() {
+    const groups = [
+      { kind: 'character', label: '可操控角色' },
+      { kind: 'npc', label: '城镇居民' },
+      { kind: 'enemy', label: '敌人' },
+    ];
+
+    const sections = groups.map((group) => {
+      const entries = Art.list(group.kind);
+      if (!entries.length) return null;
+      return el('div.art-section', null, [
+        el('div.art-section-head', null, [
+          el('span.art-section-label', { text: group.label }),
+          el('span.art-section-count', { text: `${entries.length}` }),
+        ]),
+        el('div.art-grid', { class: `is-${group.kind}` }, entries.map((entry) => this.artCard(entry))),
+      ]);
+    }).filter(Boolean);
+
+    if (!sections.length) {
+      return el('div.muted', { text: '美术清单尚未加载（服务器可能不支持 /api/art）。' });
+    }
+
+    return el('div', null, [
+      el('div.art-hint', { text: '点击任意形象可以放大查看。' }),
+      ...sections,
+    ]);
+  },
+
+  /** One figure in the gallery. */
+  artCard(entry) {
+    const img = Art.image(entry.kind, entry.id, {
+      className: 'art-card-img',
+      view: 'full',
+      alt: `${entry.name} 立绘`,
+    });
+    return el('button.art-card', {
+      onclick: () => this.viewArt(entry.kind, entry.id),
+      title: `放大查看 ${entry.name}`,
+    }, [
+      el('div.art-card-frame', { class: img ? null : 'is-empty' }, [
+        img || el('div.art-card-empty', { text: entry.name.slice(0, 1) }),
+      ]),
+      el('div.art-card-meta', null, [
+        el('div.art-card-name', { text: entry.name }),
+        entry.title ? el('div.art-card-title', { text: entry.title }) : null,
+        entry.en ? el('div.art-card-en', { text: entry.en }) : null,
+      ]),
+    ]);
+  },
+
+  /**
+   * Full-size view of one figure.
+   *
+   * Swaps the modal body rather than opening a second modal: stacking modals
+   * means two close buttons, two backdrops, and an Escape key that has to guess
+   * which one it is closing.
+   */
+  viewArt(kind, id) {
+    const entry = Art.get(kind, id);
+    if (!entry) return;
+
+    const big = Art.image(kind, id, {
+      className: 'art-view-img',
+      view: 'full',
+      alt: `${entry.name} 立绘`,
+    });
+
+    // Expression variants, for the human figures. This is the only place in the
+    // game where you can see them side by side, and they are otherwise easy to
+    // never notice at all.
+    const expressions = kind === 'enemy' ? [] : Art.expressions();
+    const strip = expressions.length
+      ? el('div.art-view-block', null, [
+        el('div.art-view-label', { text: '表情' }),
+        el('div.expr-strip', null, expressions.map((expression) => {
+          const face = Art.image(kind, id, {
+            className: 'expr-face',
+            view: 'bust',
+            plain: true,
+            expression,
+            alt: expression,
+          });
+          return el('div.expr-cell', null, [
+            el('div.expr-frame', null, [face || el('span', { text: '·' })]),
+            el('div.expr-label', { text: Art.expressionLabel(expression) }),
+          ]);
+        })),
+      ])
+      : null;
+
+    // Boss phase variants, which are the other thing a player never gets to
+    // compare without fighting the boss twice.
+    const phases = (kind === 'enemy' && id === 'ashen_king')
+      ? el('div.art-view-block', null, [
+        el('div.art-view-label', { text: '形态' }),
+        el('div.expr-strip', null, [1, 2].map((phase) => {
+          const form = Art.image(kind, id, {
+            className: 'expr-face', view: 'full', phase, alt: `phase ${phase}`,
+          });
+          return el('div.expr-cell', null, [
+            el('div.expr-frame.expr-frame-wide', null, [form || el('span', { text: '·' })]),
+            el('div.expr-label', { text: phase === 1 ? '第一阶段' : '第二阶段' }),
+          ]);
+        })),
+      ])
+      : null;
+
+    // Enemies have no written lore, so their block is the numbers that matter
+    // in a fight. Inventing flavour text for them would be worse than showing
+    // the data the codex already has.
+    const enemy = kind === 'enemy'
+      ? (State.data && State.data.enemies || []).find((e) => e.id === id)
+      : null;
+    const enemyBlock = enemy
+      ? el('div.art-view-block', null, [
+        el('div.art-view-label', { text: '战斗资料' }),
+        el('div.stat-grid', { style: { gridTemplateColumns: 'repeat(3, 1fr)' } }, [
+          statCell('等级', `Lv ${enemy.level}`),
+          statCell('韧性', enemy.toughness ? String(enemy.toughness) : '—'),
+          statCell('经验', String(enemy.exp != null ? enemy.exp : '—')),
+          statCell('生命', enemy.baseStats ? Fmt.compact(enemy.baseStats.maxHp) : '—'),
+          statCell('攻击', enemy.baseStats ? String(Math.round(enemy.baseStats.atk)) : '—'),
+          statCell('速度', enemy.baseStats ? String(Math.round(enemy.baseStats.spd)) : '—'),
+        ]),
+        el('div.art-view-tags', null, [
+          ...(enemy.weaknesses || []).map((w) => elementTag(w)),
+          ...Object.entries(enemy.resist || {}).map(([k, v]) => el('span.tag', {
+            text: `${Fmt.element(k).name} ${v <= 0 ? '免疫' : Fmt.pct(v)}`,
+          })),
+        ]),
+      ])
+      : null;
+
+    const details = [
+      entry.title ? el('div.art-view-title', { text: entry.title }) : null,
+      entry.en ? el('div.art-view-en', { text: entry.en }) : null,
+      el('div.art-view-tags', null, [
+        (kind !== 'enemy' && entry.element && Fmt.element(entry.element))
+          ? elementTag(entry.element)
+          : null,
+        entry.role ? el('span.tag', { text: entry.role }) : null,
+      ]),
+      entry.lore ? el('div.art-view-lore', { text: entry.lore }) : null,
+      enemyBlock,
+      strip,
+      phases,
+    ].filter(Boolean);
+
+    Modal.open(`${entry.name}`, el('div.art-view', null, [
+      el('div.art-view-stage', null, [
+        el('div.art-view-frame', null, [big || el('div.art-card-empty', { text: entry.name.slice(0, 1) })]),
+      ]),
+      el('div.art-view-side', null, details),
+      el('div.art-view-actions', null, [
+        el('button.btn.btn-ghost', {
+          onclick: () => this.openCodex(kind === 'enemy' ? 'enemies' : 'art'),
+        }, '← 返回图鉴'),
+        el('button.btn.btn-primary', { onclick: () => Modal.close() }, '关闭'),
+      ]),
+    ]));
   },
 
   // =======================================================================

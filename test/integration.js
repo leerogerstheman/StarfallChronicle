@@ -168,6 +168,16 @@ async function main() {
       assert(typeof e.bustY0 === 'number', `${e.id} 缺少 bustY0`);
       assert(typeof e.scale === 'number', `${e.id} 缺少 scale`);
     }
+    // The gallery renders these straight from the manifest, so a missing one is
+    // an empty card rather than an error — assert them here instead.
+    const chars = r.body.entries.filter((e) => e.kind === 'character');
+    for (const c of chars) {
+      assert(c.title, `${c.id} 缺少 title`);
+      assert(c.role, `${c.id} 缺少 role`);
+      assert(c.lore && c.lore.length > 10, `${c.id} 缺少 lore`);
+    }
+    const npcs = r.body.entries.filter((e) => e.kind === 'npc');
+    for (const n of npcs) assert(n.lore, `${n.id} 缺少 lore`);
     return `${r.body.entries.length} 个形象 · ${[...kinds].join('/')}`;
   });
 

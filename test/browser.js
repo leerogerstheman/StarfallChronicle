@@ -115,6 +115,23 @@ async function main() {
     }
   };
 
+  /**
+   * Wait until every `<img>` matching `selector` has decoded.
+   *
+   * `naturalWidth > 0` is the only honest assertion about generated art:
+   * "the src is set" passes on a 404, "the element exists" passes on a broken
+   * SVG. But a freshly inserted `<img>` is not decoded yet, so every check has
+   * to wait first — otherwise the suite reports a race as a missing picture,
+   * which is the most annoying kind of false failure because it comes and goes.
+   */
+  const awaitImages = (selector) => cdp.eval(`
+    const imgs = [...document.querySelectorAll(${JSON.stringify(selector)})];
+    await Promise.all(imgs.map(i => (i.complete && i.naturalWidth > 0)
+      ? null
+      : new Promise(r => { i.addEventListener('load', r); i.addEventListener('error', r); })));
+    return imgs.length;
+  `);
+
   try {
     // ===================================================================
     // Boot
@@ -181,6 +198,8 @@ async function main() {
     });
 
     await check('城镇 NPC 与队伍条都显示头像', async () => {
+      await awaitImages('#npc-row img.npc-face');
+      await awaitImages('#party-strip img.party-face');
       const info = await cdp.eval(`
         const npc = [...document.querySelectorAll('#npc-row .npc-card')];
         const npcImgs = [...document.querySelectorAll('#npc-row img.npc-face')];
@@ -224,6 +243,8 @@ async function main() {
 
       // The standing art is the biggest thing the art pipeline produces, so it
       // is the one most likely to be wired up but never actually decode.
+      await awaitImages('#modal-body .member-art img.member-standing');
+      await awaitImages('#modal-body .member-avatar img.member-face');
       const art = await cdp.eval(`
         const imgs = [...document.querySelectorAll('#modal-body .member-art img.member-standing')];
         const faces = [...document.querySelectorAll('#modal-body .member-avatar img.member-face')];
@@ -243,6 +264,117 @@ async function main() {
       await capture('party');
       await cdp.eval(`Modal.close(); return true;`);
       return `${cards} 张角色卡，${skills} 条技能说明，5 张立绘`;
+    });
+
+    await check('图鉴里的「形象」画廊能打开，13 个形象全部解码', async () => {
+      // The gallery exists because there was previously nowhere in the game to
+      // look at a character: the art was decoration on a 34px circle. So this
+      // asserts the entry point, the count, and that the pictures actually
+      // decoded — not merely that a grid element was created.
+      await cdp.eval(`
+        const btn = [...document.querySelectorAll('#scene-actions .btn')]
+          .find(b => b.textContent.includes('图鉴'));
+        if (!btn) throw new Error('城镇操作栏里没有图鉴按钮');
+        btn.click();
+        return true;
+      `);
+      await waitFor(cdp, `!document.getElementById('modal').classList.contains('hidden')`, 6000, '图鉴打开');
+
+      // Thirteen images is enough that the last one is still in flight when the
+      // first render finishes. Waiting for every one to decode is the
+      // difference between testing the gallery and testing the network.
+      await awaitImages('#modal-body .art-card-img');
+
+      const gallery = await cdp.eval(`
+        const cards = [...document.querySelectorAll('#modal-body .art-card')];
+        const imgs = [...document.querySelectorAll('#modal-body .art-card-img')];
+        const sections = [...document.querySelectorAll('#modal-body .art-section-label')].map(s => s.textContent);
+        return {
+          cards: cards.length,
+          imgs: imgs.length,
+          decoded: imgs.filter(i => i.complete && i.naturalWidth > 0).length,
+          broken: imgs.filter(i => !(i.complete && i.naturalWidth > 0)).map(i => i.getAttribute('src')),
+          sections,
+          manifest: Art.list('character').length + Art.list('npc').length + Art.list('enemy').length,
+        };
+      `);
+      if (gallery.cards !== gallery.manifest) {
+        throw new Error(`画廊有 ${gallery.cards} 张卡，清单里有 ${gallery.manifest} 个形象`);
+      }
+      if (gallery.decoded !== gallery.imgs) {
+        throw new Error(`${gallery.imgs} 张里只有 ${gallery.decoded} 张解码成功：${gallery.broken.join(', ')}`);
+      }
+      if (gallery.sections.length < 3) {
+        throw new Error(`应有三组（角色/NPC/敌人），得到 ${gallery.sections.join(',')}`);
+      }
+      await capture('gallery');
+      return `${gallery.cards} 张卡 · ${gallery.sections.join(' / ')} · ${gallery.decoded} 张已解码`;
+    });
+
+    await check('点击形象能放大查看，并列出表情与 Boss 形态', async () => {
+      await cdp.eval(`
+        const card = [...document.querySelectorAll('#modal-body .art-card')]
+          .find(c => c.textContent.includes('苍叶'));
+        if (!card) throw new Error('画廊里找不到苍叶');
+        card.click();
+        return true;
+      `);
+      await awaitImages('#modal-body .art-view-img');
+      await awaitImages('#modal-body .expr-frame img');
+
+      const opened = await cdp.eval(`
+        const big = document.querySelector('#modal-body .art-view-img');
+        const faces = [...document.querySelectorAll('#modal-body .expr-frame img')];
+        return {
+          title: document.getElementById('modal-title').textContent,
+          hasBig: !!big,
+          bigDecoded: !!(big && big.complete && big.naturalWidth > 0),
+          bigSrc: big ? big.getAttribute('src') : null,
+          expressions: document.querySelectorAll('#modal-body .expr-cell').length,
+          exprDecoded: faces.filter(i => i.complete && i.naturalWidth > 0).length,
+          labels: [...document.querySelectorAll('#modal-body .expr-label')].map(l => l.textContent),
+        };
+      `);
+      if (!opened.hasBig || !opened.bigDecoded) throw new Error('放大视图里的大图没有解码');
+      if (!/view=full/.test(opened.bigSrc || '')) throw new Error(`放大用的是 ${opened.bigSrc}`);
+      if (!opened.title.includes('苍叶')) throw new Error(`标题是「${opened.title}」`);
+      if (opened.expressions < 3) throw new Error(`表情只有 ${opened.expressions} 个`);
+      if (opened.exprDecoded !== opened.expressions) {
+        throw new Error(`${opened.expressions} 个表情里只有 ${opened.exprDecoded} 个解码成功`);
+      }
+
+      // Then the boss, which is the only figure with two forms. It is found on
+      // the gallery tab, not on the 敌人 tab: that one is the stat table.
+      await cdp.eval(`
+        const back = [...document.querySelectorAll('#modal-body .btn')].find(b => b.textContent.includes('返回图鉴'));
+        if (!back) throw new Error('放大视图里没有返回按钮');
+        back.click();
+        return true;
+      `);
+      await waitFor(cdp, `!!document.querySelector('#modal-body .art-card')`, 6000, '回到画廊');
+      await cdp.eval(`
+        const card = [...document.querySelectorAll('#modal-body .art-card')]
+          .find(c => c.textContent.includes('瓦尔特斯'));
+        if (!card) throw new Error('画廊里找不到灰烬之王');
+        card.click();
+        return true;
+      `);
+      await awaitImages('#modal-body .expr-frame img');
+
+      const boss = await cdp.eval(`
+        const imgs = [...document.querySelectorAll('#modal-body .expr-frame img')];
+        return {
+          forms: imgs.length,
+          decoded: imgs.filter(i => i.complete && i.naturalWidth > 0).length,
+          srcs: imgs.map(i => i.getAttribute('src')),
+        };
+      `);
+      if (boss.forms !== 2) throw new Error(`Boss 应有 2 个形态，得到 ${boss.forms}`);
+      if (boss.decoded !== 2) throw new Error(`2 个形态里只有 ${boss.decoded} 个解码成功`);
+      if (!boss.srcs.some((s) => /phase=2/.test(s))) throw new Error(`没有第二阶段：${boss.srcs.join(', ')}`);
+
+      await cdp.eval(`Modal.close(); return true;`);
+      return `苍叶 ${opened.expressions} 个表情（${opened.labels.join('/')}），Boss ${boss.forms} 个形态`;
     });
 
     await check('可以打开图鉴并切换分类', async () => {
@@ -368,6 +500,7 @@ async function main() {
       // `naturalWidth > 0` is the only honest check here. Asserting that the
       // `src` is set would pass on a 404; asserting the element exists would
       // pass on a broken SVG. A decoded image is the actual requirement.
+      await awaitImages('.unit-portrait img.unit-face');
       const info = await cdp.eval(`
         const imgs = [...document.querySelectorAll('.unit-portrait img.unit-face')];
         return {
@@ -393,6 +526,8 @@ async function main() {
     });
 
     await check('行动条与当前行动者头像也用了真实美术', async () => {
+      await awaitImages('.tl-item img.tl-face');
+      await awaitImages('#actor-avatar img.actor-face');
       const info = await cdp.eval(`
         const tl = [...document.querySelectorAll('.tl-item img.tl-face')];
         const actor = document.querySelector('#actor-avatar img.actor-face');
@@ -549,6 +684,12 @@ async function main() {
     // The boss, driven from the UI
     // ===================================================================
     await check('Boss 战：剧情 → 战斗 → 结束，全流程无异常', async () => {
+      // Defensive: a check that threw before its own cleanup would otherwise
+      // leave a modal open, and the story modal below would then be layered on
+      // top of it — which is how a test bug turns into a twenty-minute hang
+      // instead of a red line.
+      await cdp.eval(`if (Modal.isOpen) Modal.close(); return true;`);
+
       // Walk to the boss node and enter. The UI path is `WorldUI.enterNode`
       // (which shows the story modal), so the test drives that rather than
       // calling the API directly and leaving the modal unopened.
@@ -610,8 +751,10 @@ async function main() {
           while (actions < 6 && State.view && State.view.mode === 'battle') {
             // Bounded, because "no command buttons yet" is a legitimate state
             // (the server is mid-turn) and an unbounded retry there hangs the
-            // whole suite instead of failing it.
-            if (stall++ > 400) break;
+            // whole suite instead of failing it. Kept small on purpose: 60
+            // retries is three seconds, which is long enough for a real
+            // transition and short enough that a broken state fails loudly.
+            if (stall++ > 60) break;
             let waited = 0;
             while (Runtime.busy && waited++ < 200) await new Promise(r => setTimeout(r, 30));
             if (State.view.mode !== 'battle') break;
@@ -638,14 +781,35 @@ async function main() {
 
             const btns = [...document.querySelectorAll('#command-buttons .cmd-btn')];
             if (!btns.length) { await new Promise(r => setTimeout(r, 60)); continue; }
-            const skill = btns.find(b => b.dataset.kind === 'skill' && !b.disabled);
-            const basic = btns.find(b => b.dataset.kind === 'basic' && !b.disabled);
-            const chosen = skill || basic;
+
+            // Play like a competent player, not like a metronome. The balance
+            // harness drives its fights with a weakness-aware policy; a browser
+            // test that always clicks "the first skill" loses the boss fight in
+            // four rounds and never reaches the phases and summons it is
+            // supposed to be exercising.
+            const living = State.view.battle.enemies.filter(e => e.alive);
+            const weak = new Set(living.flatMap(e => e.weaknesses || []));
+            const elementOf = (btn) => {
+              const s = (State.data.skills || []).find(x => x.id === btn.dataset.skill);
+              return s ? s.element : null;
+            };
+            const pick = (kind) => btns
+              .filter(b => b.dataset.kind === kind && !b.disabled)
+              .sort((a, b) => (weak.has(elementOf(b)) ? 1 : 0) - (weak.has(elementOf(a)) ? 1 : 0))[0];
+
+            const chosen = pick('skill') || pick('basic');
             if (!chosen) { await new Promise(r => setTimeout(r, 60)); continue; }
             chosen.click();
             await new Promise(r => setTimeout(r, 70));
-            const t = document.querySelector('.unit.is-targetable');
-            if (t) t.click();
+
+            const element = elementOf(chosen);
+            const targets = [...document.querySelectorAll('.unit.is-targetable')];
+            const best = targets.find((t) => {
+              const e = living.find((x) => x.uid === t.dataset.uid);
+              return e && element && (e.weaknesses || []).includes(element);
+            }) || targets[0];
+            if (best) best.click();
+
             actions++;
             let inner = 0;
             while (Runtime.busy && inner++ < 200) await new Promise(r => setTimeout(r, 30));

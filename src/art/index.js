@@ -103,6 +103,8 @@ function artManifest() {
         en: spec.en || '',
         title: spec.title || '',
         element: spec.element || 'physical',
+        role: spec.role || '',
+        lore: spec.lore || '',
         accent: spec.accent || '',
         scale,
         // Where the bust crop starts vertically. The cast has different

@@ -168,6 +168,11 @@ function npcArt(id) {
     en: '',
     title: '',
     element: 'physical',
+    // The gallery shows one line of flavour. For an NPC the first thing they
+    // say is a better introduction than a gameplay hint, and it is already
+    // written.
+    lore: (base.dialogue && base.dialogue[0]) || base.hint || '',
+    hint: base.hint || '',
     accent: art.accent,
   };
 }
