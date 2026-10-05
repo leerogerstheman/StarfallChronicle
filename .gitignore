@@ -1,0 +1,22 @@
+# Dependencies (the project has none, but a stray install should not be committed)
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# Runtime / debug artifacts
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test output
+test/*.tmp
+coverage/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~

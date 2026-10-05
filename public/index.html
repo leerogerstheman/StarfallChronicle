@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>星陨纪年 · Starfall Chronicle</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>⚔</text></svg>">
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<!-- =====================================================================
+     Boot / loading
+     ===================================================================== -->
+<div id="boot" class="boot">
+  <div class="boot-inner">
+    <div class="boot-mark">◈</div>
+    <h1>星陨纪年</h1>
+    <p class="boot-sub">Starfall Chronicle</p>
+    <p class="boot-status" id="boot-status">正在启动…</p>
+  </div>
+</div>
+
+<!-- =====================================================================
+     Title screen — the first thing a player sees, so it carries the tone.
+     ===================================================================== -->
+<div id="title" class="title-screen hidden">
+  <div class="title-bg"></div>
+  <div class="title-content">
+    <p class="title-kicker">JRPG BATTLE TEMPLATE</p>
+    <h1 class="title-name">星陨纪年</h1>
+    <p class="title-en">STARFALL CHRONICLE</p>
+    <p class="title-tag">旧都已经烧了十年。今天有人要进去。</p>
+
+    <div class="title-menu">
+      <button class="btn btn-primary" data-action="new-game">开始新游戏</button>
+      <div class="title-level">
+        <label for="start-level">起始等级</label>
+        <input type="range" id="start-level" min="1" max="24" value="8">
+        <output id="start-level-out">8</output>
+        <p class="title-hint">调高可以跳过前期练级，直接体验精英与 Boss。</p>
+      </div>
+      <button class="btn btn-ghost" data-action="show-help">玩法说明</button>
+    </div>
+
+    <p class="title-foot">参考《崩坏：星穹铁道》的战斗流程 · 技能设计致敬 Persona / 轨迹 / 伊苏 / 炼金工房</p>
+  </div>
+</div>
+
+<!-- =====================================================================
+     Main app shell
+     ===================================================================== -->
+<div id="app" class="app hidden">
+
+  <!-- Top bar: always visible so the player never loses their bearings -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="brand">◈ 星陨纪年</span>
+      <span class="topbar-sep">/</span>
+      <span class="place" id="topbar-place">—</span>
+    </div>
+    <div class="topbar-right">
+      <span class="stat-chip gold"><span class="chip-icon">◎</span><span id="topbar-gold">0</span></span>
+      <span class="stat-chip" id="topbar-party">—</span>
+      <button class="btn btn-small btn-ghost" data-nav="help">说明</button>
+    </div>
+  </header>
+
+  <!-- ------------------------------------------------------------------
+       World / town view
+       ------------------------------------------------------------------ -->
+  <main class="screen" id="screen-world">
+    <div class="world-layout">
+
+      <section class="panel world-main">
+        <div class="world-scene" id="world-scene">
+          <div class="scene-bg" id="scene-bg"></div>
+          <div class="scene-info">
+            <p class="scene-type" id="scene-type">—</p>
+            <h2 class="scene-name" id="scene-name">—</h2>
+            <p class="scene-desc" id="scene-desc">—</p>
+          </div>
+          <div class="scene-actions" id="scene-actions"></div>
+        </div>
+
+        <div class="lore-box hidden" id="lore-box">
+          <span class="lore-mark">❝</span>
+          <p id="lore-text"></p>
+        </div>
+
+        <!-- NPCs, shown only in town -->
+        <div class="npc-row" id="npc-row"></div>
+      </section>
+
+      <aside class="panel world-side">
+        <h3 class="panel-title">队伍</h3>
+        <div class="party-strip" id="party-strip"></div>
+
+        <h3 class="panel-title">目的地</h3>
+        <div class="travel-list" id="travel-list"></div>
+
+        <h3 class="panel-title">进度</h3>
+        <div class="progress-box" id="progress-box"></div>
+      </aside>
+    </div>
+  </main>
+
+  <!-- ------------------------------------------------------------------
+       Battle view — the centerpiece.
+       ------------------------------------------------------------------ -->
+  <main class="screen hidden" id="screen-battle">
+
+    <!-- Turn order timeline: the single most important piece of UI in an
+         action-gauge game, because it is what the player plans around. -->
+    <div class="timeline" id="timeline">
+      <div class="timeline-label">行动顺序</div>
+      <div class="timeline-track" id="timeline-track"></div>
+    </div>
+
+    <div class="battle-field" id="battle-field">
+      <div class="field-bg" id="field-bg"></div>
+
+      <div class="side side-enemy" id="side-enemy"></div>
+      <div class="vs-mark">VS</div>
+      <div class="side side-ally" id="side-ally"></div>
+
+      <!-- Floating damage numbers are positioned absolutely over the field -->
+      <div class="float-layer" id="float-layer"></div>
+    </div>
+
+    <div class="battle-bottom">
+      <!-- Skill point pips, the shared party resource -->
+      <div class="sp-bar" id="sp-bar">
+        <span class="sp-label">战技点</span>
+        <div class="sp-pips" id="sp-pips"></div>
+      </div>
+
+      <!-- Action log: last few events, so the player can follow what happened -->
+      <div class="battle-log" id="battle-log"></div>
+
+      <!-- Command panel -->
+      <div class="command-panel" id="command-panel">
+        <!-- The card is a stable container: the renderer replaces its children,
+             never the card itself, so `#actor-name` and `#actor-hp` keep their
+             identities across renders. Replacing the card would silently delete
+             those ids on the first render, which breaks anything holding a
+             reference to them. -->
+        <div class="actor-card" id="actor-card">
+          <div class="actor-avatar" id="actor-avatar" style="color: var(--ally)">?</div>
+          <div class="actor-info">
+            <p class="actor-name" id="actor-name">—</p>
+            <div class="bar bar-hp small"><div class="bar-fill" id="actor-hp" style="width: 0%"></div></div>
+          </div>
+        </div>
+        <div class="command-buttons" id="command-buttons"></div>
+      </div>
+    </div>
+
+    <!-- Target picker overlay -->
+    <div class="target-overlay hidden" id="target-overlay">
+      <p class="target-hint" id="target-hint">选择目标</p>
+      <button class="btn btn-small btn-ghost" data-action="cancel-target">取消 (Esc)</button>
+    </div>
+
+    <!-- Ultimate interrupt prompt: pulses when anyone is charged -->
+    <div class="ult-alert hidden" id="ult-alert">
+      <span class="ult-alert-icon">⚡</span>
+      <span id="ult-alert-text">终结技可用</span>
+    </div>
+  </main>
+
+  <!-- ------------------------------------------------------------------
+       Result / game over
+       ------------------------------------------------------------------ -->
+  <main class="screen hidden" id="screen-result">
+    <div class="result-card" id="result-card"></div>
+  </main>
+
+  <!-- ------------------------------------------------------------------
+       Modal: party management, shop, help, codex
+       ------------------------------------------------------------------ -->
+  <div class="modal hidden" id="modal">
+    <div class="modal-backdrop" data-action="close-modal"></div>
+    <div class="modal-panel">
+      <header class="modal-head">
+        <h2 id="modal-title">—</h2>
+        <button class="btn btn-icon" data-action="close-modal">✕</button>
+      </header>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Toast for transient messages -->
+  <div class="toast-wrap" id="toast-wrap"></div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/ui.js"></script>
+<script src="/js/battle.js"></script>
+<script src="/js/world.js"></script>
+<script src="/js/main.js"></script>
+</body>
+</html>

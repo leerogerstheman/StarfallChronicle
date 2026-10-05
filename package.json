@@ -1,0 +1,30 @@
+{
+  "name": "starfall-chronicle",
+  "version": "0.1.0",
+  "description": "Starfall Chronicle - a zero-dependency JRPG template and playable demo (Star Rail style turn order, Persona/Trails/Ys/Atelier style skills)",
+  "license": "MIT",
+  "private": true,
+  "type": "commonjs",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "selftest": "node test/run-all.js",
+    "balance": "node test/balance.js"
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "keywords": [
+    "jrpg",
+    "game-template",
+    "turn-based",
+    "action-order",
+    "weakness-break",
+    "persona",
+    "trails",
+    "ys",
+    "atelier"
+  ]
+}
