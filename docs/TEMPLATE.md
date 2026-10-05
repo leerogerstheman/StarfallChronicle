@@ -9,16 +9,17 @@
 ## 目录
 
 1. [加一个新角色](#一加一个新角色)
-2. [加一个新技能](#二加一个新技能)
-3. [效果类型速查表](#三效果类型速查表)
-4. [目标选择器速查表](#四目标选择器速查表)
-5. [加一种新状态](#五加一种新状态)
-6. [加一个新敌人](#六加一个新敌人)
-7. [加一场 Boss 战](#七加一场-boss-战)
-8. [加一个地图节点](#八加一个地图节点)
-9. [加一件装备 / 道具](#九加一件装备--道具)
-10. [调平衡](#十调平衡)
-11. [什么时候必须写代码](#十一什么时候必须写代码)
+2. [加一个新角色的立绘](#一之二加一个新角色的立绘)
+3. [加一个新技能](#二加一个新技能)
+4. [效果类型速查表](#三效果类型速查表)
+5. [目标选择器速查表](#四目标选择器速查表)
+6. [加一种新状态](#五加一种新状态)
+7. [加一个新敌人](#六加一个新敌人)
+8. [加一场 Boss 战](#七加一场-boss-战)
+9. [加一个地图节点](#八加一个地图节点)
+10. [加一件装备 / 道具](#九加一件装备--道具)
+11. [调平衡](#十调平衡)
+12. [什么时候必须写代码](#十一什么时候必须写代码)
 
 ---
 
@@ -86,14 +87,101 @@ DEFAULT_LOADOUT: {
 
 不写也能用，只是开局不带装备。
 
-**3. 跑一遍自检**
+**3. 给它一张立绘**
+
+美术是必需项，不是可选项：`test/art.js` 会断言每个可操控角色都有 spec，
+缺了会直接失败。见 [加一个新角色的立绘](#加一个新角色的立绘)。
+
+**4. 跑一遍自检**
 
 ```bash
 npm run selftest
+npm run art
 ```
 
 自检会检查：技能 id 是否存在、每个角色是否有 basic/skill/ultimate 三个槽位、
 钩子处理器是否注册过。**打错字会立刻报错**，不会静默失效。
+
+---
+
+## 一之二、加一个新角色的立绘
+
+**文件：`src/art/specs/characters.js`**
+
+立绘是**代码生成的**，不是画好存起来的图片。一个角色只需要一条 spec：
+
+```js
+shion: {
+  pose: 'ready',                       // stand / ready / cast / hip / guard / reach / cross
+  scale: 0.99,                         // 身高，以地面为锚点缩放；不要和已有角色重复
+  skin: 'light',                       // porcelain / light / warm / tan / deep
+  eye: '#ff9de2',
+  hair: { style: 'ayaha', base: '#8a6fd4', shadow: '#5a4694' },
+  costume: shionCostume,               // 一个返回 { back, mid, boots, hands } 的函数
+  weapon: 'sabre',                     // sabre / spear / orb / staff / satchel，或 null
+  gear: { steel: '#e4edf7', grip: '#2b3448' },
+},
+```
+
+名字、称号、属性、元素**不写在这里**——它们从 `src/core/characters.js` 读，
+所以改数据文件里的名字，立绘上的名字跟着变。
+
+### 写 costume 函数
+
+服装用 `src/art/outfits.js` 的共享零件拼。**比例是共享的，剪影是自己的**：
+
+```js
+function shionCostume(pose) {
+  const coat = '#3a2f5e';
+  return {
+    // 在身体后面：披风、后摆
+    back: cape(pose, { fill: shade(coat, -0.3), spread: 110, length: 460, split: true }),
+    // 盖在躯干上：外套、袖子、领子、腰带、护肩
+    mid: [
+      draw(skirt(pose, { fromY: 450, fromHalf: 78, toY: 700, toHalf: 112,
+        points: pointsHem(112, 700, [20, 6, 24]) }), coat),
+      draw(garment(pose, { hemY: 500, hemHalf: 96, shoulderHalf: 82, neckDrop: 30,
+        hem: pointsHem(96, 500, [12, 3, 14]) }), coat),
+      sleeve(pose, 'L', { fill: coat, to: 'wrist', cuff: '#e8cd7c', pad: 10 }),
+      sleeve(pose, 'R', { fill: coat, to: 'wrist', cuff: '#e8cd7c', pad: 10 }),
+      collarHigh(pose, { fill: '#e8cd7c', height: 70, spread: 36 }),
+      belt(pose, { fill: '#4a3524', buckle: '#c8a44a', y: 446, half: 72 }),
+    ].join(''),
+    // 靴子在衣服**之前**画：长下摆要盖住靴口
+    boots: [
+      boot(pose, 'L', { fill: '#241f18', topY: 690, cuff: '#8c93a8', sole: '#14110d' }),
+      boot(pose, 'R', { fill: '#241f18', topY: 690, cuff: '#8c93a8', sole: '#14110d' }),
+    ].join(''),
+    // 手套在**手之后**画
+    hands: glove(pose, 'L', { fill: '#4a3524', length: 0.4 })
+          + glove(pose, 'R', { fill: '#4a3524', length: 0.4 }),
+  };
+}
+```
+
+**所有下摆的点列表都是从左到右写的**（`garment` 和 `skirt` 内部会按需要反转）。
+写反了会得到一个蝴蝶结，而且在源码里看不出来。
+
+### 三件必须做的事
+
+1. **姿势和身高不能和已有角色重复。** `test/art.js` 会报错。
+   七个姿势、身高 0.95–1.04，就是为了让五个角色站在一起不像克隆人。
+2. **顶部留够余量。** 身高是**以地面为锚点**缩放的，所以 1.04 的角色，
+   头发在 y = 26 的位置会落到 y = -5——出画布。`test/art.js` 要求顶部余量 ≥ 14 单位。
+   `node tools/render-art.js --bounds` 会告诉你**是哪一层**出了画布。
+3. **头发和皮肤要有色差。** 差值小于 45 时刘海会和额头糊成一块。
+   `node tools/art-sheet.js` 会在 bust 上取样并报出来。
+
+### 看结果
+
+```bash
+npm run art          # 21 项结构自检
+npm run art:sheet    # 生成 docs/art-sheet.png 并逐张测量像素
+npm run art:render   # 把每张 SVG 导到临时目录，可以直接用浏览器打开
+```
+
+加敌人见 `src/art/specs/enemies.js`（用 `blob` / `plate` / `spike` / `eye` 四块积木），
+加 NPC 见 `src/art/specs/npcs.js`。完整的系统说明在 [`ART.md`](ART.md)。
 
 ---
 

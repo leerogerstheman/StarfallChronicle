@@ -140,7 +140,7 @@ async function main() {
     return `${html.length} 字节`;
   });
 
-  for (const asset of ['/css/style.css', '/js/api.js', '/js/ui.js', '/js/battle.js', '/js/world.js', '/js/main.js']) {
+  for (const asset of ['/css/style.css', '/js/api.js', '/js/ui.js', '/js/art.js', '/js/battle.js', '/js/world.js', '/js/main.js']) {
     await check(`静态资源 ${asset}`, async () => {
       const r = await fetch(base + asset);
       assert(r.status === 200, `HTTP ${r.status}`);
@@ -152,6 +152,64 @@ async function main() {
       return `${text.length} 字节`;
     });
   }
+
+  // --- Generated art -----------------------------------------------------
+
+  await check('/api/art 列出了全部美术', async () => {
+    const r = await call('GET', '/api/art');
+    assert(r.status === 200 && r.body.ok, `HTTP ${r.status}`);
+    const kinds = new Set(r.body.entries.map((e) => e.kind));
+    assert(kinds.has('character') && kinds.has('enemy') && kinds.has('npc'),
+      `缺少类别：${[...kinds].join(',')}`);
+    assert(r.body.entries.length >= 13, `只有 ${r.body.entries.length} 个形象`);
+    for (const e of r.body.entries) {
+      // The client and the art tools both need these to frame the bust crop,
+      // and neither can derive them: heights differ per character.
+      assert(typeof e.bustY0 === 'number', `${e.id} 缺少 bustY0`);
+      assert(typeof e.scale === 'number', `${e.id} 缺少 scale`);
+    }
+    return `${r.body.entries.length} 个形象 · ${[...kinds].join('/')}`;
+  });
+
+  await check('每张立绘都能通过 HTTP 取到，且是 SVG', async () => {
+    const manifest = (await call('GET', '/api/art')).body.entries;
+    let bytes = 0;
+    for (const entry of manifest) {
+      for (const view of ['full', 'bust']) {
+        const res = await fetch(`${base}${entry.url}?view=${view}`);
+        assert(res.status === 200, `${entry.url}?view=${view} → HTTP ${res.status}`);
+        assert(/image\/svg\+xml/.test(res.headers.get('content-type') || ''),
+          `${entry.url} 的 Content-Type 是 ${res.headers.get('content-type')}`);
+        const svg = await res.text();
+        assert(svg.startsWith('<svg') && svg.endsWith('</svg>'), `${entry.url} 不是完整 SVG`);
+        bytes += svg.length;
+      }
+    }
+    return `${manifest.length} × 2 视图，共 ${(bytes / 1024).toFixed(0)} KB`;
+  });
+
+  await check('立绘支持 gzip 与 ETag 重验证', async () => {
+    const url = `${base}/art/character/ayaha.svg`;
+    const gz = await fetch(url, { headers: { 'Accept-Encoding': 'gzip' } });
+    assert(gz.headers.get('content-encoding') === 'gzip', '没有返回 gzip');
+    const etag = gz.headers.get('etag');
+    assert(etag, '没有 ETag');
+    const raw = await fetch(url, { headers: { 'Accept-Encoding': 'identity' } });
+    const rawSize = Number(raw.headers.get('content-length'));
+    const gzSize = Number(gz.headers.get('content-length'));
+    assert(gzSize < rawSize * 0.6, `压缩率只有 ${(rawSize / gzSize).toFixed(1)}×`);
+    const again = await fetch(url, { headers: { 'If-None-Match': etag } });
+    assert(again.status === 304, `重验证返回 ${again.status}，应为 304`);
+    return `${(rawSize / 1024).toFixed(0)} KB → ${(gzSize / 1024).toFixed(0)} KB，304 正常`;
+  });
+
+  await check('不存在的形象返回 404 而不是崩溃', async () => {
+    for (const bad of ['/art/character/nobody.svg', '/art/wizard/ayaha.svg', '/art/character/ayaha.png']) {
+      const r = await call('GET', bad);
+      assert(r.status === 404, `${bad} → HTTP ${r.status}`);
+    }
+    return '三种错误路径均为 404';
+  });
 
   await check('目录穿越被拒绝', async () => {
     const r = await fetch(base + '/../package.json');

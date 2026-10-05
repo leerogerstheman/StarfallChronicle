@@ -104,11 +104,15 @@ const WorldUI = {
     // --- NPCs ------------------------------------------------------------
     swap($('npc-row'), (node.npcs || []).map((npc) => {
       const def = this.findNpc(node.id, npc.id);
+      const face = Art.image('npc', npc.id, {
+        className: 'npc-face', view: 'bust', plain: true, alt: npc.name,
+      });
       return el('div.npc-card', {
         onclick: () => this.talkTo(npc, def),
         title: '点击交谈',
       }, [
-        el('div.npc-avatar', { text: npc.name.slice(0, 1) }),
+        el('div.npc-avatar', { class: face ? 'has-art' : null },
+          [face || npc.name.slice(0, 1)]),
         el('div', null, [
           el('div.npc-name', { text: npc.name }),
           el('div.npc-hint', { text: def ? def.hint : '交谈' }),
@@ -130,8 +134,16 @@ const WorldUI = {
       .filter((m) => m.active)
       .map((m) => {
         const ratio = Math.max(0, m.hp / m.maxHp);
+        const face = Art.image('character', m.charId, {
+          className: 'party-face',
+          view: 'bust',
+          plain: true,
+          expression: m.down || ratio <= 0.3 ? 'hurt' : 'neutral',
+          alt: m.name,
+        });
         return el('div.party-card', { class: m.down ? 'party-down' : null }, [
-          el('div.party-avatar', { text: m.name.slice(0, 1), style: { color: m.color } }),
+          el('div.party-avatar', { class: face ? 'has-art' : null, style: { color: m.color } },
+            [face || m.name.slice(0, 1)]),
           el('div.party-meta', null, [
             el('div.party-line', null, [
               el('span.party-name', { text: m.name }),
@@ -293,9 +305,31 @@ const WorldUI = {
     // Equipment picker: only items the player owns, per slot.
     const owned = this.ownedForSlot(m);
 
+    const face = Art.image('character', m.charId, {
+      className: 'member-face',
+      view: 'bust',
+      plain: true,
+      expression: m.down ? 'hurt' : 'neutral',
+      alt: m.name,
+    });
+
+    // The standing art gets its own column. This is the one screen in the game
+    // with room for a full-body drawing, and the party screen is exactly where
+    // a player goes to look at their characters.
+    const standing = Art.image('character', m.charId, {
+      className: 'member-standing',
+      view: 'full',
+      alt: `${m.name} 立绘`,
+    });
+
     return el('div.member-card', { class: m.active ? 'is-active' : null }, [
+      el('div.member-art', { class: standing ? 'has-art' : null }, [
+        standing || el('div.member-art-empty', { text: m.name.slice(0, 1) }),
+      ]),
+      el('div.member-body', null, [
       el('div.member-head', null, [
-        el('div.member-avatar', { text: m.name.slice(0, 1), style: { color: m.color } }),
+        el('div.member-avatar', { class: face ? 'has-art' : null, style: { color: m.color } },
+          [face || m.name.slice(0, 1)]),
         el('div', { style: { flex: '1', minWidth: '0' } }, [
           el('div.member-name', { text: m.name }),
           el('div.member-title', { text: m.title }),
@@ -372,6 +406,7 @@ const WorldUI = {
           ]),
         ]);
       })),
+      ]),
     ]);
   },
 

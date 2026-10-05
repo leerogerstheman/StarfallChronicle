@@ -22,39 +22,10 @@
  * Skips (rather than fails) when no Chromium-family browser is present.
  */
 
-const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const { createServer } = require('../src/api/server');
-
-/** Where Chromium-family browsers usually live on Windows, macOS and Linux. */
-const CANDIDATES = {
-  win32: [
-    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-  ],
-  darwin: [
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-    '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  ],
-  linux: [
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/microsoft-edge',
-  ],
-};
-
-function findBrowser() {
-  for (const candidate of CANDIDATES[process.platform] || []) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return null;
-}
+const { launchBrowser, waitFor } = require('./lib/cdp');
 
 let passed = 0;
 let failed = 0;
@@ -97,101 +68,8 @@ function assert2(hpAfter, hpBefore, spAfter, spBefore, kind) {
   }
 }
 
-/**
- * A minimal CDP client.
- *
- * Only four commands are needed (`Page.navigate`, `Runtime.evaluate`,
- * `Runtime.enable`, `Page.enable`), so a full protocol library would be more
- * dependency than tool. Events are queued so `Runtime.evaluate` calls can be
- * correlated with their results by id.
- */
-class Cdp {
-  constructor(wsUrl) {
-    this.ws = new WebSocket(wsUrl);
-    this.nextId = 1;
-    this.pending = new Map();
-    this.consoleErrors = [];
-    this.pageErrors = [];
-    this.ready = new Promise((resolve, reject) => {
-      this.ws.addEventListener('open', () => resolve());
-      this.ws.addEventListener('error', (e) => reject(new Error(`WebSocket 连接失败：${e.message || 'unknown'}`)));
-    });
-    this.ws.addEventListener('message', (event) => {
-      let msg;
-      try { msg = JSON.parse(event.data); } catch { return; }
-      if (msg.id != null) {
-        const entry = this.pending.get(msg.id);
-        if (entry) {
-          this.pending.delete(msg.id);
-          if (msg.error) entry.reject(new Error(msg.error.message));
-          else entry.resolve(msg.result);
-        }
-        return;
-      }
-      // Events
-      if (msg.method === 'Runtime.consoleAPICalled' && msg.params.type === 'error') {
-        this.consoleErrors.push((msg.params.args || []).map((a) => a.value || a.description || '').join(' '));
-      }
-      if (msg.method === 'Runtime.exceptionThrown') {
-        const d = msg.params.exceptionDetails || {};
-        this.pageErrors.push(d.exception ? (d.exception.description || d.exception.value) : d.text);
-      }
-    });
-  }
-
-  send(method, params = {}) {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify({ id, method, params }));
-      // A generous timeout: the boss fight is driven in slices, so individual
-      // evaluates are short, but a slow CI machine can still take a while to
-      // schedule the page's microtasks.
-      setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id);
-          reject(new Error(`CDP 命令超时：${method}`));
-        }
-      }, 60000);
-    });
-  }
-
-  /** Evaluate an expression in the page and return its JSON value. */
-  async eval(expression) {
-    const res = await this.send('Runtime.evaluate', {
-      expression: `(async () => { ${expression} })()`,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    if (res.exceptionDetails) {
-      const d = res.exceptionDetails;
-      throw new Error(d.exception ? (d.exception.description || d.exception.value) : d.text);
-    }
-    return res.result.value;
-  }
-
-  close() {
-    try { this.ws.close(); } catch { /* already gone */ }
-  }
-}
-
-/** Poll until `expression` is truthy, or throw after `timeout`. */
-async function waitFor(cdp, expression, timeout = 12000, label = 'condition') {
-  const start = Date.now();
-  let lastErr = null;
-  while (Date.now() - start < timeout) {
-    try {
-      const value = await cdp.eval(`return !!(${expression});`);
-      if (value) return true;
-    } catch (err) {
-      lastErr = err;
-    }
-    await new Promise((r) => setTimeout(r, 120));
-  }
-  throw new Error(`等待超时（${label}）：${expression}${lastErr ? ` — ${lastErr.message}` : ''}`);
-}
-
 async function main() {
+  const { findBrowser } = require('./lib/cdp');
   const browserPath = findBrowser();
   process.stdout.write('\n\x1b[1m浏览器冒烟测试 / Browser smoke test\x1b[0m\n');
 
@@ -209,59 +87,33 @@ async function main() {
   const url = `http://127.0.0.1:${server.address().port}/`;
 
   // --- Browser with a throwaway profile --------------------------------
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'starfall-cdp-'));
-  const args = [
-    '--headless=new',
-    '--disable-gpu',
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-extensions',
-    '--disable-background-networking',
-    '--remote-debugging-port=0',
-    `--user-data-dir=${profile}`,
-    '--window-size=1440,900',
-    'about:blank',
-  ];
-  const proc = spawn(browserPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-
-  // Chromium prints the DevTools websocket URL to stderr once it is listening.
-  const wsUrl = await new Promise((resolve, reject) => {
-    let buffer = '';
-    const timer = setTimeout(() => reject(new Error('浏览器未在 25 秒内启动调试端口')), 25000);
-    const onData = (chunk) => {
-      buffer += chunk.toString();
-      const match = buffer.match(/ws:\/\/[^\s]+/);
-      if (match) {
-        clearTimeout(timer);
-        resolve(match[0]);
-      }
-    };
-    proc.stderr.on('data', onData);
-    proc.stdout.on('data', onData);
-    proc.on('exit', (code) => {
-      clearTimeout(timer);
-      reject(new Error(`浏览器提前退出，代码 ${code}`));
-    });
-  });
-
-  // The browser-level socket cannot create a page target; connect to the page.
-  const versionRes = await fetch(`${wsUrl.replace(/^ws:/, 'http:').replace(/\/devtools\/browser\/.*$/, '')}/json/list`);
-  const targets = await versionRes.json();
-  const pageTarget = targets.find((t) => t.type === 'page');
-  if (!pageTarget) throw new Error('找不到可用的页面目标');
-
-  const cdp = new Cdp(pageTarget.webSocketDebuggerUrl);
-  await cdp.ready;
-  await cdp.send('Runtime.enable');
-  await cdp.send('Page.enable');
-  await cdp.send('Log.enable').catch(() => { /* optional domain */ });
+  const browser = await launchBrowser({ browserPath, windowSize: '1440,900' });
+  const { cdp } = browser;
 
   let navigated = false;
-  cdp.ws.addEventListener('message', (event) => {
-    let msg;
-    try { msg = JSON.parse(event.data); } catch { return; }
+  cdp.on((msg) => {
     if (msg.method === 'Page.loadEventFired') navigated = true;
   });
+
+  /**
+   * Save a PNG of the current screen.
+   *
+   * These are documentation, not assertions: they are how a human reviews the
+   * UI without running the game, and they are the only artefact that shows the
+   * generated art in context. A failure to capture is reported and ignored —
+   * a screenshot must never be the reason the suite goes red.
+   */
+  const capture = async (name) => {
+    try {
+      const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+      const outPath = path.join(__dirname, '..', 'docs', `screenshot-${name}.png`);
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      fs.writeFileSync(outPath, Buffer.from(shot.data, 'base64'));
+      process.stdout.write(`  \x1b[90m截图：docs/screenshot-${name}.png\x1b[0m\n`);
+    } catch (err) {
+      process.stdout.write(`  \x1b[90m截图 ${name} 失败（不影响测试）：${err.message}\x1b[0m\n`);
+    }
+  };
 
   try {
     // ===================================================================
@@ -274,6 +126,10 @@ async function main() {
         15000, '标题界面出现');
       const title = await cdp.eval(`return document.querySelector('.title-name').textContent;`);
       if (!title.includes('星陨')) throw new Error(`标题文本异常：${title}`);
+      // Drive battles through the client's real code path, but without waiting
+      // for the animations. Without this the boss fight takes over twenty
+      // minutes of wall clock; with it, the same fight is seconds.
+      await cdp.eval(`BattleUI.speed = 0; return true;`);
       return title;
     });
 
@@ -312,6 +168,7 @@ async function main() {
       const place = await cdp.eval(`return document.getElementById('scene-name').textContent;`);
       const party = await cdp.eval(`return document.querySelectorAll('#party-strip .party-card').length;`);
       if (party !== 4) throw new Error(`队伍卡片应为 4 张，得到 ${party}`);
+      await capture('town');
       return `${place}，${party} 名队员`;
     });
 
@@ -321,6 +178,35 @@ async function main() {
       if (travel < 1) throw new Error('没有可前往的地点');
       if (actions < 1) throw new Error('没有可执行的操作');
       return `${travel} 个目的地，${actions} 个操作`;
+    });
+
+    await check('城镇 NPC 与队伍条都显示头像', async () => {
+      const info = await cdp.eval(`
+        const npc = [...document.querySelectorAll('#npc-row .npc-card')];
+        const npcImgs = [...document.querySelectorAll('#npc-row img.npc-face')];
+        const partyImgs = [...document.querySelectorAll('#party-strip img.party-face')];
+        const decoded = (list) => list.filter(i => i.complete && i.naturalWidth > 0).length;
+        return {
+          npc: npc.length,
+          npcImgs: npcImgs.length,
+          npcDecoded: decoded(npcImgs),
+          npcSrc: npcImgs.length ? npcImgs[0].getAttribute('src') : null,
+          partyImgs: partyImgs.length,
+          partyDecoded: decoded(partyImgs),
+        };
+      `);
+      if (info.npc === 0) throw new Error('城镇里没有 NPC 卡');
+      if (info.npcImgs !== info.npc) throw new Error(`${info.npc} 个 NPC 里只有 ${info.npcImgs} 个有头像`);
+      if (info.npcDecoded !== info.npcImgs) {
+        throw new Error(`${info.npcImgs} 张 NPC 头像里只有 ${info.npcDecoded} 张解码成功`);
+      }
+      if (!/^\/art\/npc\//.test(info.npcSrc || '')) {
+        throw new Error(`NPC 用的是角色头像而不是自己的：${info.npcSrc}`);
+      }
+      if (info.partyDecoded !== info.partyImgs) {
+        throw new Error(`队伍条 ${info.partyImgs} 张里只有 ${info.partyDecoded} 张解码成功`);
+      }
+      return `NPC ${info.npcDecoded}/${info.npc}，队伍 ${info.partyDecoded}/${info.partyImgs}`;
     });
 
     await check('可以打开队伍编成并看到全部 5 名角色', async () => {
@@ -335,8 +221,28 @@ async function main() {
       const cards = await cdp.eval(`return document.querySelectorAll('#modal-body .member-card').length;`);
       if (cards !== 5) throw new Error(`应有 5 张角色卡，得到 ${cards}`);
       const skills = await cdp.eval(`return document.querySelectorAll('#modal-body .skill-item').length;`);
+
+      // The standing art is the biggest thing the art pipeline produces, so it
+      // is the one most likely to be wired up but never actually decode.
+      const art = await cdp.eval(`
+        const imgs = [...document.querySelectorAll('#modal-body .member-art img.member-standing')];
+        const faces = [...document.querySelectorAll('#modal-body .member-avatar img.member-face')];
+        return {
+          standing: imgs.length,
+          standingDecoded: imgs.filter(i => i.complete && i.naturalWidth > 0).length,
+          faces: faces.length,
+          facesDecoded: faces.filter(i => i.complete && i.naturalWidth > 0).length,
+          sample: imgs.length ? imgs[0].getAttribute('src') : null,
+        };
+      `);
+      if (art.standing !== 5) throw new Error(`应有 5 张立绘，得到 ${art.standing}`);
+      if (art.standingDecoded !== 5) throw new Error(`5 张立绘里只有 ${art.standingDecoded} 张解码成功`);
+      if (art.facesDecoded !== 5) throw new Error(`5 张头像里只有 ${art.facesDecoded} 张解码成功`);
+      if (!/view=full/.test(art.sample || '')) throw new Error(`立绘没有用 full 视图：${art.sample}`);
+
+      await capture('party');
       await cdp.eval(`Modal.close(); return true;`);
-      return `${cards} 张角色卡，${skills} 条技能说明`;
+      return `${cards} 张角色卡，${skills} 条技能说明，5 张立绘`;
     });
 
     await check('可以打开图鉴并切换分类', async () => {
@@ -456,8 +362,57 @@ async function main() {
       return '取消正常';
     });
 
-    await check('选中敌人后技能生效、日志有内容、战技点被消耗', async () => {
-      const before = await cdp.eval(`
+    // --- Generated art ---------------------------------------------------
+
+    await check('战斗里每个单位都显示真实头像，且图片确实解码成功', async () => {
+      // `naturalWidth > 0` is the only honest check here. Asserting that the
+      // `src` is set would pass on a 404; asserting the element exists would
+      // pass on a broken SVG. A decoded image is the actual requirement.
+      const info = await cdp.eval(`
+        const imgs = [...document.querySelectorAll('.unit-portrait img.unit-face')];
+        return {
+          units: document.querySelectorAll('.unit').length,
+          images: imgs.length,
+          decoded: imgs.filter(i => i.complete && i.naturalWidth > 0).length,
+          srcs: imgs.slice(0, 3).map(i => i.getAttribute('src')),
+          samples: imgs.slice(0, 2).map(i => i.getAttribute('src')),
+        };
+      `);
+      if (info.units === 0) throw new Error('战斗里没有单位卡');
+      if (info.images !== info.units) {
+        throw new Error(`${info.units} 个单位里只有 ${info.images} 个有头像`);
+      }
+      if (info.decoded !== info.images) {
+        throw new Error(`${info.images} 张头像里只有 ${info.decoded} 张解码成功（src: ${info.srcs.join(', ')}）`);
+      }
+      for (const src of info.srcs) {
+        if (!/^\/art\/(character|enemy|npc)\//.test(src)) throw new Error(`头像地址不对：${src}`);
+        if (!/view=bust/.test(src)) throw new Error(`头像没有用 bust 裁切：${src}`);
+      }
+      return `${info.decoded}/${info.units} 张已解码`;
+    });
+
+    await check('行动条与当前行动者头像也用了真实美术', async () => {
+      const info = await cdp.eval(`
+        const tl = [...document.querySelectorAll('.tl-item img.tl-face')];
+        const actor = document.querySelector('#actor-avatar img.actor-face');
+        return {
+          timeline: tl.length,
+          timelineDecoded: tl.filter(i => i.complete && i.naturalWidth > 0).length,
+          actor: !!actor,
+          actorDecoded: !!(actor && actor.complete && actor.naturalWidth > 0),
+        };
+      `);
+      if (info.timeline === 0) throw new Error('行动条没有任何头像');
+      if (info.timelineDecoded !== info.timeline) {
+        throw new Error(`行动条 ${info.timeline} 张里只有 ${info.timelineDecoded} 张解码成功`);
+      }
+      if (!info.actor || !info.actorDecoded) throw new Error('当前行动者头像没有渲染出来');
+      await capture('battle');
+      return `行动条 ${info.timeline} 张 + 行动者 1 张`;
+    });
+
+    await check('选中敌人后技能生效、日志有内容、战技点被消耗', async () => {      const before = await cdp.eval(`
         const b = State.view.battle;
         return {
           hp: b.enemies.map(e => e.hp),
@@ -517,14 +472,21 @@ async function main() {
           if (State.view.mode !== 'battle') break;
 
           // Fire a charged ultimate first — that is the mechanic under test.
+          //
+          // Through BattleUI.fireUltimate, not Api.ultimate. Calling the API
+          // directly and assigning State.view skips consume(), which is the
+          // only thing that notices the finished flag and shows the result
+          // screen. When the ultimate happened to be the killing blow, the
+          // battle ended with the result screen still hidden — a one-in-many
+          // flake that only ever appeared on the fastest wins.
           const charged = State.view.battle.allies.find(a => a.alive && a.ultimateReady);
           if (charged) {
             const ult = charged.skills.find(s => s.kind === 'ultimate');
             const tgt = State.view.battle.enemies.find(e => e.alive);
             if (ult && tgt) {
-              await Api.ultimate(State.sessionId, charged.uid, ult.id, tgt.uid)
-                .then(r => { State.view = r.view; })
-                .catch(() => {});
+              await BattleUI.fireUltimate(charged.uid, ult.id, tgt.uid);
+              let drain = 0;
+              while (Runtime.busy && drain++ < 300) await new Promise(r => setTimeout(r, 40));
               await new Promise(r => setTimeout(r, 80));
               continue;
             }
@@ -591,8 +553,19 @@ async function main() {
       // (which shows the story modal), so the test drives that rather than
       // calling the API directly and leaving the modal unopened.
       const viaUi = await cdp.eval(`
+        // Walk back to town and sleep at the inn first. A player who walks
+        // straight from one trash wave into the boss arrives at whatever health
+        // the last fight left them, and the fight then hinges on one damage
+        // roll — the run that produced this line lost the boss in three rounds.
+        // Resting costs one API call, removes that coin flip, and means the test
+        // actually exercises the boss's phases and summons.
+        for (const node of ['haven_town']) {
+          await Api.travel(State.sessionId, node).then(r => { State.view = r.view; });
+        }
+        await Api.rest(State.sessionId).then(r => { State.view = r.view; });
+
         // Travel first, through the API, so the world state is right.
-        for (const node of ['grub_hollow', 'sentinel_gate', 'throne_of_ash']) {
+        for (const node of ['whisper_woods', 'grub_hollow', 'sentinel_gate', 'throne_of_ash']) {
           await Api.travel(State.sessionId, node).then(r => { State.view = r.view; });
         }
         WorldUI.render(State.view);
@@ -633,7 +606,12 @@ async function main() {
         // slow machine, which is what keeps this test from flaking.
         const chunk = await cdp.eval(`
           let actions = 0;
+          let stall = 0;
           while (actions < 6 && State.view && State.view.mode === 'battle') {
+            // Bounded, because "no command buttons yet" is a legitimate state
+            // (the server is mid-turn) and an unbounded retry there hangs the
+            // whole suite instead of failing it.
+            if (stall++ > 400) break;
             let waited = 0;
             while (Runtime.busy && waited++ < 200) await new Promise(r => setTimeout(r, 30));
             if (State.view.mode !== 'battle') break;
@@ -643,9 +621,16 @@ async function main() {
               const ult = charged.skills.find(s => s.kind === 'ultimate');
               const tgt = State.view.battle.enemies.find(e => e.alive);
               if (ult && tgt) {
-                await Api.ultimate(State.sessionId, charged.uid, ult.id, tgt.uid)
-                  .then(r => { State.view = r.view; })
-                  .catch(() => {});
+                // Same reason as the trash fight above: go through the client's
+                // own path so the view, the command panel and the event replay
+                // all stay in step. Driving the API directly here left the
+                // command panel stale, so the next click often hit a button
+                // belonging to an actor who was no longer active — the server
+                // refused it, the loop counted it anyway, and the fight dragged
+                // on for a hundred rounds instead of fifteen.
+                await BattleUI.fireUltimate(charged.uid, ult.id, tgt.uid);
+                let drain = 0;
+                while (Runtime.busy && drain++ < 200) await new Promise(r => setTimeout(r, 30));
                 actions++;
                 continue;
               }
@@ -694,22 +679,13 @@ async function main() {
     });
 
     // A screenshot so a human can eyeball the result.
-    try {
-      const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
-      const outPath = path.join(__dirname, '..', 'docs', 'screenshot-battle.png');
-      fs.mkdirSync(path.dirname(outPath), { recursive: true });
-      fs.writeFileSync(outPath, Buffer.from(shot.data, 'base64'));
-      process.stdout.write(`  \x1b[90m截图已保存：${outPath}\x1b[0m\n`);
-    } catch {
-      /* screenshots are a nicety, not a requirement */
-    }
+    await capture('boss');
   } finally {
-    cdp.close();
-    proc.kill();
     server.close();
-    // Give the browser a moment to release its profile directory.
+    // Give the browser a moment to release its profile directory before the
+    // launcher tries to delete it.
     await new Promise((r) => setTimeout(r, 300));
-    try { fs.rmSync(profile, { recursive: true, force: true }); } catch { /* Windows may still hold it */ }
+    browser.close();
   }
 
   process.stdout.write(`\n${failed === 0 ? '\x1b[32m' : '\x1b[31m'}${passed}/${passed + failed} 通过\x1b[0m\n\n`);
@@ -726,4 +702,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { main, findBrowser };
+module.exports = { main };

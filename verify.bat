@@ -2,7 +2,7 @@
 REM ===========================================================================
 REM  Run the full verification suite. Pure ASCII - see the note in start.bat.
 REM
-REM    verify.bat            engine + integration + balance + desktop shell
+REM    verify.bat            engine + integration + art + balance + desktop shell
 REM    verify.bat --browser  also drive a real browser (needs Chrome/Edge)
 REM    verify.bat --fast     skip the desktop shell test (it builds + opens
 REM                          a real window, so it is the slow one)
@@ -34,38 +34,43 @@ echo    Starfall Chronicle - verification
 echo   ============================================================
 echo.
 
-echo   [1/5] Engine self-check ...
+echo   [1/6] Engine self-check ...
 node test\run-all.js
 if errorlevel 1 set FAILED=1
 
 echo.
-echo   [2/5] HTTP integration ...
+echo   [2/6] HTTP integration ...
 node test\integration.js
 if errorlevel 1 set FAILED=1
 
 echo.
-echo   [3/5] Balance harness ...
+echo   [3/6] Generated art ...
+node test\art.js
+if errorlevel 1 set FAILED=1
+
+echo.
+echo   [4/6] Balance harness ...
 node test\balance.js --runs 60
 if errorlevel 1 set FAILED=1
 
 if "%FAST%"=="1" (
   echo.
-  echo   [4/5] Desktop shell ... skipped, --fast
+  echo   [5/6] Desktop shell ... skipped, --fast
 ) else (
   echo.
-  echo   [4/5] Desktop shell - build + native window ...
+  echo   [5/6] Desktop shell - build + native window ...
   node test\desktop.js
   if errorlevel 1 set FAILED=1
 )
 
 if "%BROWSER%"=="1" (
   echo.
-  echo   [5/5] Browser smoke test ...
+  echo   [6/6] Browser smoke test ...
   node test\browser.js
   if errorlevel 1 set FAILED=1
 ) else (
   echo.
-  echo   [5/5] Browser smoke test ... skipped
+  echo   [6/6] Browser smoke test ... skipped
   echo         Run "verify.bat --browser" to include it.
 )
 

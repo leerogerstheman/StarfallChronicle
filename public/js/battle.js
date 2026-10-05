@@ -26,12 +26,27 @@ const BATTLE_PACING = {
   reducedMotion: 10,
 };
 
+/**
+ * How long to wait after one replayed event.
+ *
+ * `BattleUI.speed` scales every delay. It exists because the browser test now
+ * drives battles through the client's real path — which is the honest thing to
+ * do, and which means it replays every animation. At full pacing the boss fight
+ * took over twenty minutes of wall clock for a fight that is fifteen rounds
+ * long. The test sets speed to 0; a player-facing "fast battle" toggle would
+ * use the same knob.
+ */
 function pace(key) {
   const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  return reduced ? BATTLE_PACING.reducedMotion : BATTLE_PACING[key];
+  const base = reduced ? BATTLE_PACING.reducedMotion : BATTLE_PACING[key];
+  const speed = typeof BattleUI === 'undefined' || BattleUI.speed === undefined ? 1 : BattleUI.speed;
+  return Math.max(0, Math.round(base * speed));
 }
 
 const BattleUI = {
+  /** Animation pacing multiplier. 1 = normal, 0 = no waiting at all. */
+  speed: 1,
+
   /** uid -> DOM node, rebuilt each render so animation classes can be re-added. */
   unitNodes: new Map(),
   /** Queue of pending float animations, so they do not all land at once. */
@@ -68,6 +83,11 @@ const BattleUI = {
     const items = order.map((entry, index) => {
       const isCurrent = index === 0 && entry.uid === actorUid;
       const sprite = this.spriteFor(entry.id, entry.side, view);
+      const face = sprite.art
+        ? Art.image(sprite.art.kind, sprite.art.id, {
+          className: 'tl-face', view: 'bust', plain: true, alt: entry.name,
+        })
+        : null;
       return el('div.tl-item', {
         class: [
           entry.side === 'enemy' ? 'side-enemy' : 'side-ally',
@@ -77,7 +97,9 @@ const BattleUI = {
         title: `${entry.name}${entry.broken ? '（已击破）' : ''}`,
       }, [
         el('span.tl-index', { text: index + 1 }),
-        el('div.tl-icon', { text: sprite.icon, style: { color: sprite.color } }),
+        face
+          ? el('div.tl-icon.tl-icon-art', { style: { color: sprite.color } }, [face])
+          : el('div.tl-icon', { text: sprite.icon, style: { color: sprite.color } }),
         el('div.tl-name', { text: entry.name }),
       ]);
     });
@@ -132,8 +154,17 @@ const BattleUI = {
       title: this.unitTooltip(unit, view),
       onclick: targetable ? (ev) => this.onUnitClick(unit, ev) : null,
     }, [
-      el('div.unit-portrait', { style: { color: sprite.color } }, [
-        sprite.icon,
+      el('div.unit-portrait', { class: sprite.art ? 'has-art' : null, style: { color: sprite.color } }, [
+        sprite.art
+          ? Art.image(sprite.art.kind, sprite.art.id, {
+            className: 'unit-face',
+            view: 'bust',
+            plain: true,
+            expression: Art.expressionFor(unit),
+            phase: Art.phaseFor(unit),
+            alt: unit.name,
+          })
+          : sprite.icon,
         el('span.unit-el', { text: sprite.elementIcon, title: sprite.elementName }),
       ]),
       el('div.unit-name', { text: unit.name }),
@@ -255,8 +286,32 @@ const BattleUI = {
 
     const avatar = $('actor-avatar');
     if (avatar) {
-      avatar.textContent = sprite.icon;
       avatar.style.color = sprite.color;
+      // Updated in place, never rebuilt. An earlier version of this file
+      // replaced a container's children during render and deleted the `id`
+      // elements inside it, which is why the rule here is: mutate, do not
+      // replace.
+      const existing = avatar.querySelector('img.actor-face');
+      const url = sprite.art
+        ? Art.url(sprite.art.kind, sprite.art.id, {
+          view: 'bust', plain: true, expression: Art.expressionFor(actor),
+        })
+        : null;
+      if (url) {
+        if (existing) {
+          if (existing.getAttribute('src') !== url) existing.setAttribute('src', url);
+        } else {
+          avatar.textContent = '';
+          const img = document.createElement('img');
+          img.className = 'actor-face';
+          img.alt = actor.name;
+          img.src = url;
+          avatar.appendChild(img);
+        }
+      } else {
+        if (existing) existing.remove();
+        avatar.textContent = sprite.icon;
+      }
     }
     const nameEl = $('actor-name');
     if (nameEl) nameEl.textContent = actor.name;
@@ -897,7 +952,13 @@ const BattleUI = {
     };
   },
 
-  /** Look up a unit's display identity from static data, with a fallback. */
+  /**
+   * Look up a unit's display identity from static data, with a fallback.
+   *
+   * Returns the letter sigil *and* the generated art, because both are still
+   * used: the sigil is the fallback when the art manifest has not loaded (or
+   * the server predates the art routes), and the art is what the HUD shows.
+   */
   spriteFor(id, side, view) {
     const data = State.data || {};
     const chars = data.characters || [];
@@ -911,6 +972,7 @@ const BattleUI = {
         color: char.color || Fmt.elementColor(char.element),
         elementIcon: Fmt.element(char.element).icon,
         elementName: Fmt.element(char.element).name,
+        art: Art.resolve(char.id, 'ally'),
       };
     }
     const enemy = enemies.find((e) => e.id === id) || enemies.find((e) => e.id === baseId);
@@ -920,6 +982,7 @@ const BattleUI = {
         color: enemy.color || 'var(--enemy)',
         elementIcon: '☠',
         elementName: '敌方',
+        art: Art.resolve(enemy.id, 'enemy'),
       };
     }
     return {
@@ -927,6 +990,7 @@ const BattleUI = {
       color: side === 'enemy' ? 'var(--enemy)' : 'var(--ally)',
       elementIcon: '·',
       elementName: '',
+      art: Art.resolve(id, side),
     };
   },
 

@@ -196,6 +196,9 @@
 
 <script src="/js/api.js"></script>
 <script src="/js/ui.js"></script>
+<!-- Art must load before the screens that draw it, because BattleUI and
+     WorldUI read `Art.has(...)` synchronously while rendering. -->
+<script src="/js/art.js"></script>
 <script src="/js/battle.js"></script>
 <script src="/js/world.js"></script>
 <script src="/js/main.js"></script>

@@ -9,6 +9,10 @@
 **双击 `start.bat` 就能玩。** 不需要 `npm install`，不需要构建，不需要联网，
 **也不需要浏览器**——游戏跑在自己的原生窗口里。
 
+**所有人物形象都是代码生成的 SVG。** 5 名角色的全身立绘与战斗头像、6 种敌人插画
+（含 Boss 二阶段）、城镇 NPC 头像，全部由 `src/art/` 在请求时算出来。
+没有一张位图，没有一个外部素材。
+
 ```
 双击  start.bat
 → 弹出独立窗口「星陨纪年 · Starfall Chronicle」
@@ -20,9 +24,19 @@
 
 ![原生窗口](docs/screenshot-window.png)
 
+![战斗界面](docs/screenshot-battle.png)
+
 ![城镇界面](docs/screenshot-town.png)
 
-![战斗界面](docs/screenshot-battle.png)
+![队伍编成 · 立绘](docs/screenshot-party.png)
+
+![Boss 结算](docs/screenshot-boss.png)
+
+### 全部 13 个形象
+
+`node tools/art-sheet.js` 生成的对照表（由无头浏览器渲染并逐张测量）：
+
+![美术对照表](docs/art-sheet.png)
 
 ---
 
@@ -38,6 +52,10 @@
 **它也是一个能从头玩到尾的 Demo。** 5 名可操控角色、小怪/精英/Boss 三段战斗、
 一张有 5 个节点的地图、城镇服务（旅店/军需处/队伍编成）、升级与装备成长、
 Boss 战两阶段 + 召唤 + 蓄力终结技。序章可以通关。
+
+**它还自带一套原创人物美术。** 立绘、头像、敌人插画、NPC 头像都是
+`src/art/` 里的纯函数生成的矢量图——加一个新角色，是写一条 spec，不是找画师。
+详见 [`docs/ART.md`](docs/ART.md)。
 
 ---
 
@@ -90,18 +108,20 @@ start.bat --console --open   # 顺便打开默认浏览器
 | 套件 | 项数 | 测什么 |
 |---|---|---|
 | `test/run-all.js` | 59 | 引擎不变式、确定性、成长曲线 |
-| `test/integration.js` | 34 | HTTP 端到端：会话、地图、战斗、通关 |
+| `test/integration.js` | 39 | HTTP 端到端：会话、地图、战斗、通关、美术路由 |
+| `test/art.js` | 21 | 美术覆盖完整性、SVG 合法性、几何边界、设计约束 |
 | `test/balance.js` | 5 组遭遇 | 胜率与回合数（带 95% 置信区间）|
 | `test/desktop.js` | 8 | 构建启动器、开原生窗口、关窗口不留孤儿进程 |
-| `test/browser.js` | 17 | 真实浏览器里从城镇打到 Boss |
+| `test/browser.js` | 20 | 真实浏览器里从城镇打到 Boss，并断言头像真的解码成功 |
 
 或者用 npm 脚本：
 
 ```bash
 npm run selftest      # 引擎自检（59 项）
-npm run integration   # HTTP 集成（34 项）
+npm run integration   # HTTP 集成（39 项）
+npm run art           # 美术生成（21 项）
 npm run desktop       # 原生窗口（8 项）
-npm run browser       # 浏览器全流程（17 项）
+npm run browser       # 浏览器全流程（20 项）
 npm run balance       # 平衡性测试
 ```
 
@@ -109,6 +129,19 @@ npm run balance       # 平衡性测试
 （要求中英文两半都对，防止编码悄悄坏掉），然后用 `taskkill`（不带 `/F`，
 即发 `WM_CLOSE`）关掉它，再断言后台的 Node 进程已经消失。
 机器上没有 WebView2 运行时时，窗口那几项会**明确报告跳过**，不会伪装成通过。
+
+`test/browser.js` 里关于美术的那几项用的是 `img.naturalWidth > 0`。
+断言"`src` 存在"会在 404 上通过，断言"元素存在"会在坏 SVG 上通过，
+只有**真的解码成功**才是需求本身。
+
+### 看美术
+
+```
+node tools/art-sheet.js            # 生成 docs/art-sheet.png 并逐张测量
+node tools/art-sheet.js --kind enemy
+node tools/render-art.js           # 把每张 SVG 写到临时目录
+node tools/render-art.js --bounds  # 每一层的几何边界，用来定位"哪一层出画布了"
+```
 
 ---
 
@@ -245,6 +278,20 @@ D:\StarfallChronicle\
 │  ├─ server.js              入口：启动前先自检，不通过就拒绝启动
 │  ├─ config.js              端口 / 绑定地址
 │  │
+│  ├─ art/                   ← 人物美术（纯函数：spec 进，SVG 字符串出）
+│  │  ├─ svg.js              构造器 + Catmull-Rom 插值
+│  │  ├─ palette.js          配色、明暗、对比度
+│  │  ├─ body.js             人体骨架、四肢、头、手、脚
+│  │  ├─ face.js             五官 + 四种表情（参数化）
+│  │  ├─ hair.js             7 种发型
+│  │  ├─ outfits.js          服装零件（外套/裙摆/袖/靴/手套/领/腰带/披风/护肩）
+│  │  ├─ gear.js             武器与道具（刀/枪/法球/圣杖/行囊）
+│  │  ├─ motifs.js           元素氛围（风/火/冰/雷/虚数/量子/孢子/余烬）
+│  │  ├─ human.js            按固定图层顺序组装人形
+│  │  ├─ creature.js         按固定图层顺序组装非人形
+│  │  ├─ specs/              13 个形象的"画什么"（角色 5 / 敌人 6 / NPC 2）
+│  │  └─ index.js            renderArt() + 清单 + 缓存
+│  │
 │  ├─ core/                  ← 纯数据与纯函数，不依赖战斗状态
 │  │  ├─ rules.js            所有可调数值（伤害公式、行动条、成长曲线）
 │  │  ├─ skills.js           42 个技能，全部是声明式效果列表
@@ -278,23 +325,32 @@ D:\StarfallChronicle\
 │  └─ js/
 │     ├─ api.js              API 客户端 + 错误码到人话的映射
 │     ├─ ui.js               DOM 构建器、toast、modal
+│     ├─ art.js              美术清单、URL 拼装、战斗前预加载
 │     ├─ battle.js           战斗演出：事件重放、伤害数字、终结技提示
 │     ├─ world.js            城镇、队伍、商店、图鉴
 │     └─ main.js             启动、路由、快捷键
 │
+├─ tools/                    ← 开发工具（不参与游戏运行）
+│  ├─ art-sheet.js           渲染对照表 + 无头浏览器逐张测量
+│  └─ render-art.js          导出 SVG；--bounds 定位哪一层出了画布
+│
 ├─ test/
 │  ├─ run-all.js             59 项引擎自检
-│  ├─ integration.js         34 项 HTTP 端到端
+│  ├─ integration.js         39 项 HTTP 端到端
+│  ├─ art.js                 21 项美术结构自检（纯 Node）
 │  ├─ balance.js             平衡性测试（带置信区间）
 │  ├─ desktop.js             8 项原生窗口（会真的开窗、真的关窗）
-│  ├─ browser.js             17 项真实浏览器全流程
+│  ├─ browser.js             20 项真实浏览器全流程
+│  ├─ lib/cdp.js             共享的 CDP 客户端与浏览器启动器
 │  ├─ probe.js               调试：采样渲染时序
 │  ├─ interact.js            调试：单次交互探针
 │  └─ inspect.js             调试：导出实际页面状态
 │
 └─ docs/
    ├─ ARCHITECTURE.md        架构决策与踩坑记录
-   └─ TEMPLATE.md            怎么加角色/技能/敌人/地图
+   ├─ ART.md                 美术系统：骨架、图层、曲线、怎么加人
+   ├─ TEMPLATE.md            怎么加角色/技能/敌人/地图
+   └─ art-sheet.png          13 个形象的对照表（工具生成）
 ```
 
 ---
@@ -372,6 +428,44 @@ defineEnemy({
 
 详见 [`docs/TEMPLATE.md`](docs/TEMPLATE.md)。
 
+### 人物美术：代码生成的 SVG
+
+`src/art/` 是一组纯函数：一个 spec 进，一个 SVG 字符串出。
+`GET /art/character/ayaha.svg?view=bust&expression=hurt` 就是一次调用。
+
+**为什么生成而不是画好存起来。** 项目的承诺是"双击就能玩"，
+美术如果是文件就需要一个生成/导出环节，也就多了一个会不同步的东西。
+生成还带来两个额外好处：角色名从 `characters.js` 读，改名不会对不上；
+以及**可以测试**——生成的东西能被断言。
+
+**五个角色画在同一副骨架上。** 比例、四肢粗细、肩宽、头身比写死在
+`body.js`，spec 只决定发型、服装、道具、配色、姿势、身高。
+难用眼睛判断的部分（手肘在哪、胯比肩宽多少）只决定一次，这是让五个形象
+像同一套人的唯一办法。身高用 `spec.scale` 以地面为锚点缩放，0.95–1.03。
+
+**曲线是 Catmull-Rom，不是手写贝塞尔。** 所有有机形状由锚点列表定义，
+插值成三次贝塞尔。改刘海是改一个坐标，不是重画四段控制点。
+
+**图层顺序就是设计本身。** 平面矢量人物"看起来不对"几乎总是图层放错了。
+顺序定死在 `human.js` 的 `ORDER` 里，`test/art.js` 断言这个列表：
+靴子在衣服之前（长下摆要盖住靴口）、握在手里的武器在手之前（手指才是"握"上去的）、
+背在身后的长枪在衣服之前（外套遮住中段才叫"背着"）。
+
+**表情是四个参数，不是四张画。** 眼型开合度、眉角、眉高、嘴形曲线。
+几何共享，所以"笑的脸"不可能和"平静的脸"错位。
+
+**这套美术是在看不见成品的条件下写的**，所以有两层替代验证：
+`test/art.js`（纯 Node，21 项）检查覆盖完整性、SVG 合法性、id 唯一性、
+**几何是否超出画布**（三次贝塞尔落在控制点凸包内，所以检查所有输出坐标是保守上界）、
+bust 裁切是否框住头、姿势/身高是否重复；
+`tools/art-sheet.js` 在无头浏览器里把每张图栅格化后**读像素**——
+覆盖率、包围盒、剪影两两 IoU、以及在 bust 上取固定点验证
+"头顶是头发、双眼够暗、脸颊是暖肤色"。
+
+五官取样是最值钱的一项：包围盒可以完美，而刘海已经长到眼睛上了。
+
+详见 [`docs/ART.md`](docs/ART.md)。
+
 ### 原生窗口（不依赖浏览器）
 
 `desktop/Launcher.cs` 是一个约 600 行的 WinForms 宿主，只干一件事：
@@ -425,8 +519,15 @@ Launcher.exe
 | **前端混用两种 view** | 点战技后敌人全部消失，无法选目标 | 把「战斗 view」合并进了「游戏 view」，`view.enemies` 变成 undefined |
 | **DOM id 被渲染删除** | `#actor-name` 在第一次渲染后变成 null | 渲染时替换了容器的子节点，把带 id 的元素删掉了 |
 | **战斗结束卡在 battle 模式** | 界面永远停在战斗，所有指令都被拒绝 | `takeTurn` 已经结束了战斗，但会话层没有结算 |
+| **美术缓存键漏了一个选项** | 剪影测量全部带上背景光晕，覆盖率数字全是错的 | `renderArt` 的缓存键少写了 `plain`，第一次非 plain 渲染污染了缓存 |
+| **SVG 坐标提取把属性名当数字** | 每个形象都像挂在画布左边（x = 1） | 正则匹配属性串里的所有数字，把 `x1` 里的 `1` 也算成了坐标 |
+| **身高缩放把头发顶出画布** | 白鸦（1.03）和军需官（1.04）的头发被裁掉 | 缩放锚在地面，越高的角色头发离画布顶越近；改发型时想不到这一层 |
+| **NPC 借用角色头像** | 旅店老板娘长得和艾莉丝一模一样 | `world-data.js` 里写的是 `portrait: 'elise'`，而美术是按 id 查的 |
+| **头发和皮肤同色** | 艾莉丝的刘海和额头糊成一块（RGB 距离 27） | 五官取样里「色差 ≥ 45」这一项抓到的 |
+| **测试绕过客户端渲染路径** | Boss 战打了 102 回合而不是 23 | 测试直接调 `Api.ultimate` 并覆盖 `State.view`，跳过了 `consume()`，指令面板留在上一回合 |
 
-每一条的详细说明都在 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+前 11 条的详细说明都在 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，
+美术相关的 6 条在 [`docs/ART.md`](docs/ART.md)。
 
 ---
 

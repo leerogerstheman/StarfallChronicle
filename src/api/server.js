@@ -21,6 +21,8 @@
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const zlib = require('zlib');
+const crypto = require('crypto');
 const { Game, MODE } = require('../world/game');
 const skills = require('../core/skills');
 const { STATUSES } = require('../core/status');
@@ -31,6 +33,7 @@ const { ITEMS } = require('../core/items');
 const { WORLD } = require('../core/world-data');
 const { listCharacters, DEFAULT_LOADOUT } = require('../core/characters');
 const enemies = require('../core/enemies');
+const art = require('../art');
 
 /** Sessions, keyed by id. In-memory: closing the server ends the save. */
 const sessions = new Map();
@@ -108,6 +111,78 @@ function serveStatic(req, res, urlPath) {
     });
     fs.createReadStream(target).pipe(res);
   });
+}
+
+// ===========================================================================
+// Generated art
+// ===========================================================================
+
+/**
+ * Art is generated, never stored.
+ *
+ * `src/art/` is a pure function from a spec to an SVG string, so there is no
+ * build step, no asset directory to keep in sync, and no way for a portrait to
+ * go missing after a rename. The cost is CPU on first request, which is why the
+ * result is memoised and the gzip is cached alongside it.
+ *
+ * `no-cache` rather than `no-store`: the browser is told to revalidate, so an
+ * edited spec shows up on the next refresh, but an unchanged portrait costs a
+ * 304 instead of a 45 KB download. `no-store` would make the battle HUD
+ * re-download every unit's portrait on every re-render.
+ */
+const encoded = new Map();
+const MAX_ENCODED = 128;
+
+function serveArt(req, res, pathname, search) {
+  const match = /^\/art\/([a-z]+)\/([A-Za-z0-9_]+)\.svg$/.exec(pathname);
+  if (!match) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('not found');
+  }
+
+  const [, kind, id] = match;
+  let payload;
+  try {
+    payload = art.renderArt(kind, id, {
+      view: search.get('view'),
+      expression: search.get('expression'),
+      phase: search.get('phase'),
+    });
+  } catch (err) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end(`no such art: ${kind}/${id}`);
+  }
+
+  const key = `${kind}/${id}?${search.toString()}`;
+  let entry = encoded.get(key);
+  if (!entry) {
+    const raw = Buffer.from(payload.svg, 'utf8');
+    entry = {
+      etag: `"${crypto.createHash('sha1').update(raw).digest('hex').slice(0, 16)}"`,
+      raw,
+      gzip: zlib.gzipSync(raw, { level: 9 }),
+    };
+    if (encoded.size >= MAX_ENCODED) encoded.delete(encoded.keys().next().value);
+    encoded.set(key, entry);
+  }
+
+  if (req.headers['if-none-match'] === entry.etag) {
+    res.writeHead(304, { ETag: entry.etag, 'Cache-Control': 'no-cache' });
+    return res.end();
+  }
+
+  const useGzip = /\bgzip\b/.test(req.headers['accept-encoding'] || '');
+  const body = useGzip ? entry.gzip : entry.raw;
+  const headers = {
+    'Content-Type': 'image/svg+xml; charset=utf-8',
+    'Content-Length': body.length,
+    ETag: entry.etag,
+    'Cache-Control': 'no-cache',
+    'X-Content-Type-Options': 'nosniff',
+  };
+  if (useGzip) headers['Content-Encoding'] = 'gzip';
+  res.writeHead(200, headers);
+  return res.end(body);
 }
 
 // ===========================================================================
@@ -408,6 +483,22 @@ route('GET', '/api/codex/skill/:id', (ctx) => {
   return { ok: true, skill };
 });
 
+// --- Art -------------------------------------------------------------------
+
+/**
+ * Everything that has art.
+ *
+ * The client uses this to preload portraits before a battle starts, which is
+ * the difference between a battle screen that appears complete and one that
+ * pops its faces in one at a time.
+ */
+route('GET', '/api/art', () => ({
+  ok: true,
+  views: art.VIEWS,
+  expressions: art.EXPRESSIONS,
+  entries: art.artManifest(),
+}));
+
 // ===========================================================================
 // Server
 // ===========================================================================
@@ -455,10 +546,15 @@ function handle(req, res) {
     return;
   }
 
+  // Generated art. Checked before static so `/art/...` can never be shadowed
+  // by a file that happens to land in `public/art/`.
+  if (pathname.startsWith('/art/')) {
+    return serveArt(req, res, pathname, url.searchParams);
+  }
+
   // Static
   serveStatic(req, res, pathname);
 }
-
 function createServer() {
   return http.createServer(handle);
 }

@@ -23,7 +23,13 @@ const Main = {
     const status = $('boot-status');
     try {
       status.textContent = '正在加载游戏数据…';
-      State.data = await Api.data();
+      // The art manifest rides along with the boot sequence rather than being
+      // fetched lazily on first render: the first render of a battle screen
+      // reads `Art.has(...)` synchronously to decide whether to draw a portrait
+      // or the letter fallback, and a late manifest would make that decision
+      // wrong once and then right on the next frame.
+      const [data] = await Promise.all([Api.data(), Art.load()]);
+      State.data = data;
 
       status.textContent = '检查服务器状态…';
       await Api.health();
@@ -81,6 +87,10 @@ const Main = {
     const mode = view.mode;
 
     if (mode === 'battle') {
+      // Warm both expressions for every unit before the first paint. The
+      // portraits are SVG documents, and without this the first frame of a
+      // battle shows empty circles that fill in one at a time.
+      Art.preloadBattle(view);
       this.showScreen('screen-battle');
       BattleUI.render(view.battle || view);
       BattleUI.renderUltAlert(view.battle || view);
@@ -92,6 +102,10 @@ const Main = {
       return;
     }
 
+    // In town: warm the standing art, because the party screen is one click
+    // away and a full-body sheet is the one thing big enough to notice loading.
+    Art.preloadParty((view.party && view.party.members ? view.party.members : [])
+      .map((m) => m.charId));
     this.showScreen('screen-world');
     WorldUI.render(view);
   },
@@ -237,11 +251,21 @@ const Main = {
     const rows = (result.partyAfter || []).map((m) => {
       const fallen = (result.fallen || []).some((f) => f.charId === m.charId);
       const isMvp = result.mvp && result.mvp.id === m.charId;
+      const face = Art.image('character', m.charId, {
+        className: 'result-face',
+        view: 'bust',
+        plain: true,
+        expression: fallen ? 'hurt' : 'victory',
+        alt: m.name,
+      });
       return el('div.result-row', { class: fallen ? 'is-down' : null }, [
-        el('div.row', null, [
-          el('span', { text: m.name }),
-          isMvp ? el('span.result-mvp', { text: '★ MVP' }) : null,
-          fallen ? el('span.tag', { text: '倒下', style: { color: 'var(--danger)' } }) : null,
+        face ? el('div.result-avatar', null, [face]) : null,
+        el('div', { style: { flex: '1', minWidth: '0' } }, [
+          el('div.row', null, [
+            el('span', { text: m.name }),
+            isMvp ? el('span.result-mvp', { text: '★ MVP' }) : null,
+            fallen ? el('span.tag', { text: '倒下', style: { color: 'var(--danger)' } }) : null,
+          ]),
         ]),
         el('span.mono', {
           text: fallen ? '—' : `Lv${m.level} · ${Fmt.compact(m.hp)} HP`,

@@ -13,6 +13,9 @@
     "start": "node src/server.js",
     "selftest": "node test/run-all.js",
     "integration": "node test/integration.js",
+    "art": "node test/art.js",
+    "art:sheet": "node tools/art-sheet.js",
+    "art:render": "node tools/render-art.js",
     "desktop": "node test/desktop.js",
     "browser": "node test/browser.js",
     "balance": "node test/balance.js",
@@ -29,6 +32,8 @@
     "persona",
     "trails",
     "ys",
-    "atelier"
+    "atelier",
+    "svg",
+    "generated-art"
   ]
 }
