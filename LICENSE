@@ -35,3 +35,16 @@ synthesis of the Atelier series.
 No assets, code, text, or data from those works are used here. The systems are
 reimplemented from scratch as original code, which is what makes this usable as
 a template.
+
+## Bundled third-party binaries
+
+`desktop/webview2-sdk/` contains the Microsoft WebView2 managed assemblies
+(`Microsoft.Web.WebView2.Core.dll`, `Microsoft.Web.WebView2.WinForms.dll`,
+`WebView2Loader.dll`, `WebView2Loader_x86.dll`) and Microsoft's own license
+text in `desktop/webview2-sdk/LICENSE.txt`.
+
+They are redistributed unmodified under that license so that
+`build-desktop.bat` can compile the native window launcher offline, with no
+.NET SDK, no NuGet restore, and no network access. They are the only files in
+this repository that are not original work, and they are not required to play
+the game — `start.bat --console` runs everything without them.

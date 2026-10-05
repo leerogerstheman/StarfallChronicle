@@ -15,6 +15,13 @@ desktop.ini
 test/*.tmp
 coverage/
 
+# Native launcher build output. Reproducible with build-desktop.bat, and
+# start.bat rebuilds it automatically on first run, so the binaries do not
+# need to live in git. The WebView2 SDK sources ARE committed, under
+# desktop/webview2-sdk/, so the build works offline on any Windows box.
+desktop/bin/
+*.pdb
+
 # Editor
 .vscode/
 .idea/

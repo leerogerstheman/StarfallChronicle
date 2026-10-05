@@ -2,8 +2,10 @@
 REM ===========================================================================
 REM  Run the full verification suite. Pure ASCII - see the note in start.bat.
 REM
-REM    verify.bat            engine + integration + balance
+REM    verify.bat            engine + integration + balance + desktop shell
 REM    verify.bat --browser  also drive a real browser (needs Chrome/Edge)
+REM    verify.bat --fast     skip the desktop shell test (it builds + opens
+REM                          a real window, so it is the slow one)
 REM ===========================================================================
 
 setlocal
@@ -18,6 +20,13 @@ if errorlevel 1 (
 )
 
 set FAILED=0
+set FAST=0
+set BROWSER=0
+REM  Guard the empty-argument case: "for %%a in () do" is a cmd syntax error.
+if not "%~1"=="" for %%a in (%*) do (
+  if /i "%%a"=="--browser" set BROWSER=1
+  if /i "%%a"=="--fast" set FAST=1
+)
 
 echo.
 echo   ============================================================
@@ -25,28 +34,38 @@ echo    Starfall Chronicle - verification
 echo   ============================================================
 echo.
 
-echo   [1/4] Engine self-check ...
+echo   [1/5] Engine self-check ...
 node test\run-all.js
 if errorlevel 1 set FAILED=1
 
 echo.
-echo   [2/4] HTTP integration ...
+echo   [2/5] HTTP integration ...
 node test\integration.js
 if errorlevel 1 set FAILED=1
 
 echo.
-echo   [3/4] Balance harness ...
+echo   [3/5] Balance harness ...
 node test\balance.js --runs 60
 if errorlevel 1 set FAILED=1
 
-if /i "%~1"=="--browser" (
+if "%FAST%"=="1" (
   echo.
-  echo   [4/4] Browser smoke test ...
+  echo   [4/5] Desktop shell ... skipped, --fast
+) else (
+  echo.
+  echo   [4/5] Desktop shell - build + native window ...
+  node test\desktop.js
+  if errorlevel 1 set FAILED=1
+)
+
+if "%BROWSER%"=="1" (
+  echo.
+  echo   [5/5] Browser smoke test ...
   node test\browser.js
   if errorlevel 1 set FAILED=1
 ) else (
   echo.
-  echo   [4/4] Browser smoke test ... skipped
+  echo   [5/5] Browser smoke test ... skipped
   echo         Run "verify.bat --browser" to include it.
 )
 

@@ -6,13 +6,19 @@
 角色技能与效果设计致敬 Persona（状态异常与弱点）、轨迹（导力魔法与推条）、
 伊苏（高速连击与闪避）、炼金工房（道具调合与引爆）。
 
-**双击 `start.bat` 就能玩。** 不需要 `npm install`，不需要构建，不需要联网。
+**双击 `start.bat` 就能玩。** 不需要 `npm install`，不需要构建，不需要联网，
+**也不需要浏览器**——游戏跑在自己的原生窗口里。
 
 ```
 双击  start.bat
-→ 浏览器打开 http://127.0.0.1:8787
+→ 弹出独立窗口「星陨纪年 · Starfall Chronicle」
 → 选起始等级，点「开始新游戏」
 ```
+
+首次运行会自动用 Windows 自带的 C# 编译器把窗口启动器编出来（约 2 秒），
+之后每次都是秒开。
+
+![原生窗口](docs/screenshot-window.png)
 
 ![城镇界面](docs/screenshot-town.png)
 
@@ -43,35 +49,66 @@ Boss 战两阶段 + 召唤 + 蓄力终结技。序章可以通关。
 双击  start.bat
 ```
 
-服务器会自动跑一遍自检（59 项），全部通过才启动。然后在浏览器里打开
-<http://127.0.0.1:8787>。
+游戏在自己的原生窗口里打开，有自己的标题栏、任务栏图标和窗口图标，
+不占用浏览器标签页。服务器会自动跑一遍自检（59 项），全部通过才启动窗口。
 
-想在启动时直接开浏览器：
+窗口模式下：
+
+| 操作 | 效果 |
+|---|---|
+| 关闭窗口 | 后台的 Node 进程一起结束，不留孤儿进程 |
+| <kbd>F11</kbd> / 最大化 | 全屏游玩 |
+| <kbd>Ctrl</kbd>+<kbd>+</kbd> / <kbd>-</kbd> | 缩放 |
+| 右键 | 已禁用（避免出现浏览器菜单） |
+
+想换端口：
 
 ```
-start.bat --open
+start.bat --port 9000
 ```
 
-换端口：
+想用浏览器（或者在没有图形界面的机器上）：
 
 ```
-set PORT=9000
-start.bat
+start.bat --console          # 只跑服务器，打印地址
+start.bat --console --open   # 顺便打开默认浏览器
 ```
+
+如果本机没装 WebView2 运行时，启动器会**自动退回默认浏览器**并在窗口里说明，
+游戏照样能玩，不会报错退出。
 
 ### 验证
 
 ```
-双击  verify.bat              # 引擎自检 + HTTP 集成 + 平衡性
+双击  verify.bat              # 引擎 + 集成 + 平衡性 + 原生窗口
 双击  verify.bat --browser    # 再加上真实浏览器全流程
+双击  verify.bat --fast       # 跳过原生窗口那一项（最慢的一项）
 ```
+
+四套测试，全绿才叫通过：
+
+| 套件 | 项数 | 测什么 |
+|---|---|---|
+| `test/run-all.js` | 59 | 引擎不变式、确定性、成长曲线 |
+| `test/integration.js` | 34 | HTTP 端到端：会话、地图、战斗、通关 |
+| `test/balance.js` | 5 组遭遇 | 胜率与回合数（带 95% 置信区间）|
+| `test/desktop.js` | 8 | 构建启动器、开原生窗口、关窗口不留孤儿进程 |
+| `test/browser.js` | 17 | 真实浏览器里从城镇打到 Boss |
 
 或者用 npm 脚本：
 
 ```bash
-npm run selftest    # 引擎自检（59 项）
-npm run balance     # 平衡性测试
+npm run selftest      # 引擎自检（59 项）
+npm run integration   # HTTP 集成（34 项）
+npm run desktop       # 原生窗口（8 项）
+npm run browser       # 浏览器全流程（17 项）
+npm run balance       # 平衡性测试
 ```
+
+`test/desktop.js` 值得一提：它**真的会开一个窗口**，从操作系统读回窗口标题
+（要求中英文两半都对，防止编码悄悄坏掉），然后用 `taskkill`（不带 `/F`，
+即发 `WM_CLOSE`）关掉它，再断言后台的 Node 进程已经消失。
+机器上没有 WebView2 运行时时，窗口那几项会**明确报告跳过**，不会伪装成通过。
 
 ---
 
@@ -195,8 +232,14 @@ Boss 战在等级 18 / 20 / 21 下的胜率分别是 100% / 100% / 83%——
 ```
 D:\StarfallChronicle\
 ├─ start.bat                 启动（纯 ASCII，先切代码页再交给 Node）
+├─ build-desktop.bat         编译原生窗口启动器（用 Windows 自带的 csc.exe）
 ├─ verify.bat                跑全部验证
 ├─ package.json              零依赖，只有 scripts
+│
+├─ desktop/                  ← 原生窗口启动器
+│  ├─ Launcher.cs            WinForms + WebView2 宿主（~600 行，含注释）
+│  ├─ webview2-sdk/          vendored 的 WebView2 托管程序集（随 MIT 许可分发）
+│  └─ bin/                   编译产物（.gitignore，首次运行自动生成）
 │
 ├─ src/
 │  ├─ server.js              入口：启动前先自检，不通过就拒绝启动
@@ -243,6 +286,7 @@ D:\StarfallChronicle\
 │  ├─ run-all.js             59 项引擎自检
 │  ├─ integration.js         34 项 HTTP 端到端
 │  ├─ balance.js             平衡性测试（带置信区间）
+│  ├─ desktop.js             8 项原生窗口（会真的开窗、真的关窗）
 │  ├─ browser.js             17 项真实浏览器全流程
 │  ├─ probe.js               调试：采样渲染时序
 │  ├─ interact.js            调试：单次交互探针
@@ -328,6 +372,40 @@ defineEnemy({
 
 详见 [`docs/TEMPLATE.md`](docs/TEMPLATE.md)。
 
+### 原生窗口（不依赖浏览器）
+
+`desktop/Launcher.cs` 是一个约 600 行的 WinForms 宿主，只干一件事：
+**给游戏一个自己的窗口。**
+
+```
+Launcher.exe
+  1. 找到项目根目录（exe 旁 / 工作目录，向上找 5 层，找 src\server.js）
+  2. 找到 Node（PATH → Program Files → LOCALAPPDATA → 其它工具链自带的运行时）
+  3. 若端口已被占用：直接连上去，不杀别人的进程
+     否则：隐藏启动 src\server.js，接管它的生命周期
+  4. 轮询 TCP 端口，直到能连上
+  5. 打开窗口，把 WebView2 指向 http://127.0.0.1:<port>
+  6. 窗口关闭 → 结束 Node → 退出
+```
+
+几个刻意的选择：
+
+- **用 WebView2，而不是把界面重写成原生控件。**
+  `public/css/style.css` 是这个项目里最值钱的部分之一（40KB，自定义属性 + grid +
+  伤害数字动画 + 减弱动效降级）。改成 WinForms 控件只会更丑、更慢，
+  还会让 17 项浏览器测试全部作废。WebView2 保留了唯一的渲染实现。
+- **用轮询端口判断就绪，而不是解析子进程 stdout。**
+  子进程的输出流不是服务端承诺过的契约；**监听中的 socket 才是**。
+  服务端只会在自检全部通过之后才 bind 端口，所以「能连上」就等于「能玩」。
+- **不请求任何提权，不写注册表，不装东西。**
+  编译用的是 Windows 自带的 `csc.exe`（`build-desktop.bat`），
+  所以没有 .NET SDK、没有 Visual Studio、没有 NuGet 也能构建。
+- **缺 WebView2 就退回浏览器，而不是报错退出。**
+  启动器会打开默认浏览器，并用一个对话框说明原因，游戏照样能玩。
+
+`start.bat` 的逻辑是：窗口启动器不存在 → 用 `csc.exe` 现场编一个 → 运行。
+连 `csc.exe` 都没有（或加了 `--console`）→ 退回纯 Node 服务器模式。
+
 ---
 
 ## 八、开发过程中发现并修掉的真问题
@@ -355,6 +433,9 @@ defineEnemy({
 ## 九、环境要求
 
 - **Node.js 22 或更新**（用了内置 `fetch` 和 `WebSocket`，测试需要）
+- **原生窗口**：Windows + WebView2 运行时（Win10 1803 之后基本都自带；
+  没装的话启动器会自动退回浏览器，不影响游玩）
+- 编译原生窗口需要 .NET Framework 4.x 的 `csc.exe`（Windows 自带，无需安装）
 - 浏览器冒烟测试需要本机装了 Chrome / Edge / Chromium（没装会自动跳过）
 
 服务器默认只绑定 `127.0.0.1`，**没有任何认证**。
@@ -362,7 +443,7 @@ defineEnemy({
 
 ```
 set HOST=0.0.0.0
-start.bat
+start.bat --console
 ```
 
 ---
