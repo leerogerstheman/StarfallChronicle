@@ -15,7 +15,9 @@ function intFromEnv(name, fallback) {
 }
 
 const config = {
-  version: '0.1.0',
+  // Kept in step with package.json by `test/run-all.js`, which asserts the two
+  // agree — a banner that reports the wrong version is worse than no banner.
+  version: '0.2.0',
   /** Bind address. 127.0.0.1 by default; there is no authentication. */
   host: process.env.HOST || '127.0.0.1',
   port: intFromEnv('PORT', 8787),

@@ -2,6 +2,10 @@
 
 **一个零依赖的 JRPG 战斗模板与可玩 Demo。**
 
+[![最新版本](https://img.shields.io/badge/version-0.2.0-5ee6a8?style=flat-square)](https://github.com/leerogerstheman/StarfallChronicle/releases/tag/v0.2.0)
+[![许可](https://img.shields.io/badge/license-MIT-c8a44a?style=flat-square)](LICENSE)
+[![依赖](https://img.shields.io/badge/dependencies-0-c77dff?style=flat-square)](package.json)
+
 战斗流程参考《崩坏：星穹铁道》（行动条推条、弱点击破、战技点、终结技插入），
 角色技能与效果设计致敬 Persona（状态异常与弱点）、轨迹（导力魔法与推条）、
 伊苏（高速连击与闪避）、炼金工房（道具调合与引爆）。
@@ -17,10 +21,27 @@
 双击  start.bat
 → 弹出独立窗口「星陨纪年 · Starfall Chronicle」
 → 选起始等级，点「开始新游戏」
+→ 城镇操作栏点「📖 图鉴」看全部 13 个形象
 ```
 
 首次运行会自动用 Windows 自带的 C# 编译器把窗口启动器编出来（约 2 秒），
 之后每次都是秒开。
+
+---
+
+## 下载
+
+| 方式 | 怎么做 | 适合 |
+|---|---|---|
+| **发行包** | [Releases](https://github.com/leerogerstheman/StarfallChronicle/releases/latest) 下载 zip，解压，双击 `start.bat` | 只想玩 |
+| **克隆仓库** | `git clone` 后双击 `start.bat` | 想看代码 / 改东西 |
+
+两种方式都**只需要装 Node.js 22 或更新版本**，其余什么都不用装。
+原生窗口启动器在首次运行时用 Windows 自带的编译器现场构建。
+
+完整变更历史见 [`CHANGELOG.md`](CHANGELOG.md)。
+
+---
 
 ![原生窗口](docs/screenshot-window.png)
 
@@ -113,21 +134,21 @@ start.bat --console --open   # 顺便打开默认浏览器
 
 | 套件 | 项数 | 测什么 |
 |---|---|---|
-| `test/run-all.js` | 59 | 引擎不变式、确定性、成长曲线 |
+| `test/run-all.js` | 60 | 引擎不变式、确定性、成长曲线、版本号一致性 |
 | `test/integration.js` | 39 | HTTP 端到端：会话、地图、战斗、通关、美术路由 |
 | `test/art.js` | 21 | 美术覆盖完整性、SVG 合法性、几何边界、设计约束 |
 | `test/balance.js` | 5 组遭遇 | 胜率与回合数（带 95% 置信区间）|
 | `test/desktop.js` | 8 | 构建启动器、开原生窗口、关窗口不留孤儿进程 |
-| `test/browser.js` | 20 | 真实浏览器里从城镇打到 Boss，并断言头像真的解码成功 |
+| `test/browser.js` | 22 | 真实浏览器里从城镇打到 Boss，并断言头像真的解码成功 |
 
 或者用 npm 脚本：
 
 ```bash
-npm run selftest      # 引擎自检（59 项）
+npm run selftest      # 引擎自检（60 项）
 npm run integration   # HTTP 集成（39 项）
 npm run art           # 美术生成（21 项）
 npm run desktop       # 原生窗口（8 项）
-npm run browser       # 浏览器全流程（20 项）
+npm run browser       # 浏览器全流程（22 项）
 npm run balance       # 平衡性测试
 ```
 
@@ -284,6 +305,7 @@ D:\StarfallChronicle\
 ├─ start.bat                 启动（纯 ASCII，先切代码页再交给 Node）
 ├─ build-desktop.bat         编译原生窗口启动器（用 Windows 自带的 csc.exe）
 ├─ verify.bat                跑全部验证
+├─ CHANGELOG.md              更新日志
 ├─ package.json              零依赖，只有 scripts
 │
 ├─ desktop/                  ← 原生窗口启动器

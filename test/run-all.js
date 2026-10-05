@@ -61,6 +61,19 @@ function section(title) {
 // ===========================================================================
 section('注册表完整性 / Registry integrity');
 
+check('版本号在 package.json 与 config.js 之间一致', () => {
+  // The banner prints `config.version`; the release tag comes from
+  // package.json. If they disagree, the game reports a version that no
+  // published release corresponds to — which is how a bug report ends up
+  // describing code nobody can find.
+  const pkg = require('../package.json');
+  const config = require('../src/config');
+  assert(pkg.version === config.version,
+    `package.json 是 ${pkg.version}，config.js 是 ${config.version}`);
+  assert(/^\d+\.\d+\.\d+$/.test(pkg.version), `版本号格式不对：${pkg.version}`);
+  return `v${pkg.version}`;
+});
+
 check('技能定义合法', () => {
   const problems = skills.validateAll();
   assert(problems.length === 0, problems.join('; '));
