@@ -9,17 +9,19 @@
 ## 目录
 
 1. [加一个新角色](#一加一个新角色)
-2. [加一个新角色的立绘](#一之二加一个新角色的立绘)
-3. [加一个新技能](#二加一个新技能)
-4. [效果类型速查表](#三效果类型速查表)
-5. [目标选择器速查表](#四目标选择器速查表)
-6. [加一种新状态](#五加一种新状态)
-7. [加一个新敌人](#六加一个新敌人)
-8. [加一场 Boss 战](#七加一场-boss-战)
-9. [加一个地图节点](#八加一个地图节点)
-10. [加一件装备 / 道具](#九加一件装备--道具)
-11. [调平衡](#十调平衡)
-12. [什么时候必须写代码](#十一什么时候必须写代码)
+2. [给角色加一条追击](#一之四给角色加一条追击)
+3. [加一个新角色的立绘](#一之二加一个新角色的立绘)
+4. [加一个新技能](#二加一个新技能)
+5. [效果类型速查表](#三效果类型速查表)
+6. [目标选择器速查表](#四目标选择器速查表)
+7. [加一种新状态](#五加一种新状态)
+8. [加一个新敌人](#六加一个新敌人)
+9. [加一场 Boss 战](#七加一场-boss-战)
+10. [精英词缀](#七之二精英词缀)
+11. [加一个地图节点](#八加一个地图节点)
+12. [加一件装备 / 道具](#九加一件装备--道具)
+13. [调平衡](#十调平衡)
+14. [什么时候必须写代码](#十一什么时候必须写代码)
 
 ---
 
@@ -182,6 +184,58 @@ npm run art:render   # 把每张 SVG 导到临时目录，可以直接用浏览�
 
 加敌人见 `src/art/specs/enemies.js`（用 `blob` / `plate` / `spike` / `eye` 四块积木），
 加 NPC 见 `src/art/specs/npcs.js`。完整的系统说明在 [`ART.md`](ART.md)。
+
+---
+
+## 一之四、给角色加一条追击
+
+**文件：`src/core/characters.js`（角色定义）+ `src/core/skills.js`（技能本体）**
+
+追击是一条「免费、限时触发的技能」，分两部分声明。
+
+技能本体（`kind: 'followup'`，不占战技点）：
+
+```js
+define({
+  id: 'shion_follow_pierce',
+  name: '追影',
+  icon: '🎯',
+  kind: 'followup',          // 关键：客户端不渲染按钮，引擎免费释放
+  element: 'quantum',
+  target: 'single',
+  skillPointCost: 0,         // 必须为 0——它是"送的"
+  desc: '对敌人造成 85% 攻击力的量子伤害。',
+  effects: [{ type: 'damage', multiplier: 0.85, element: 'quantum' }],
+});
+```
+
+触发器（角色定义里，和 `skills` 平级）：
+
+```js
+followups: [
+  {
+    on: 'allyUltimate',       // 见下表
+    skill: 'shion_follow_pierce',
+    chance: 0.7,              // 省略 = 必定触发
+    targetFrom: 'casterTarget',
+    limitPerRound: 1,         // 该追击每回合最多一次
+  },
+],
+```
+
+| 字段 | 说明 |
+|---|---|
+| `on` | `break`（击破敌人）/ `allyUltimate`（队友终结技）/ `allyHeal`（治疗发生）/ `afterAllySkill`（普通技能后，预留槽位） |
+| `targetFrom` | `triggerTarget`（事件的承受者）/ `casterTarget`（终结技施放者的目标）/ `randomEnemy` / 省略（技能自选） |
+| `chance` | 0–1，省略 = 必定 |
+| `limitPerRound` / `limitPerBattle` | 单条追击的次数上限 |
+
+三条**全局闸门**在 `rules.js` 的 `BALANCE`：每回合全队最多
+`MAX_FOLLOWUPS_PER_ROUND`（3）次追击；追击不再触发追击（深度上限 1）；
+`kind: 'followup'` 的技能永远不会进指令按钮。
+
+设计底线：追击的价值来自**时机**（把伤害/控制塞进击破窗口、终结技连协），
+而不是资源碾压——所以它不耗战技点、不占行动条，但每回合有全队上限。
 
 ---
 
@@ -431,6 +485,11 @@ defineEnemy({
 
   exp: 120,
   gold: 60,
+  // 掉落表（可选）：胜利后逐条 roll，进背包。chance 省略 = 保底掉落。
+  drops: [
+    { item: 'heal_potion', chance: 0.35 },
+    { item: 'remedy', chance: 0.20 },
+  ],
   intro: '战斗开始时的旁白（可选）',
 });
 ```
@@ -465,6 +524,31 @@ defineEnemy({
 | `fortifyBelowHpRatio` | 高于此血量才用防御技能 |
 | `targeting` | `highestAtk` / `lowestHp` / `random` / `lowestDef` / `mostDebuffs` / `weakestToElement` |
 | `selfDestructAfterTurns` | 自爆倒计时 |
+| `itemKit` | 见下文「敌人会用道具」 |
+| `itemKitLimit` | 该敌人整场最多用几次道具（默认 2） |
+| `itemUseBelowHpRatio` | 队友血量低于此比例才触发喂药（默认 0.32） |
+
+### 敌人会用道具（可选）
+
+```js
+ai: {
+  policy: 'summoner',
+  // 两种写法：字符串 = 无限量；数组 = 每项限用 count 次
+  itemKit: [{ id: 'greater_potion', count: 1 }],
+  itemKitLimit: 1,
+  itemUseBelowHpRatio: 0.30,
+},
+```
+
+规则，以及为什么这样设计：
+
+- **只为同伴用药。** 触发条件是「另一个敌人濒死」（复活优先于治疗）；怪物给自己
+  喝药只是个治疗技能，不值得单独立规则。
+- **敌方道具不消耗玩家的每场 3 次预算**，也看不见它从哪来——敌人道具来自
+  声明本身，这正是它被写进 AI 日志（`reason: 'item:…'`）的原因：决策可见，
+  才不像是作弊。
+- 需要一个能用的道具 id：`heal_potion` / `greater_potion` / `revival_flask` 都行，
+  复活药会自动指向**倒下的**同伴。
 
 ### ⚠ 两个必须写的字段
 
@@ -557,6 +641,46 @@ defineEnemy({
 
 ---
 
+## 七之二、精英词缀
+
+**文件：`src/core/affixes.js`**
+
+词缀是「开战时滚到整组敌人身上的随机修饰」。规则写死在
+`rollFightAffixes`：精英 roll **1 个**，Boss roll **2 个**，其余不 roll；
+从**战斗种子**派生，同一场战斗可复现，且不随回合内 RNG 抖动。
+
+```js
+defineAffix 形状（AFFIXES 表里的一条）：
+{
+  id: 'hollow',
+  name: '空洞',
+  icon: '◌',
+  weight: 8,                 // 抽取权重
+  tier: 2,                   // 1–3，决定徽章颜色
+  desc: '受到伤害的 10% 转化为护盾。',
+  stats: { atk: 0.10 },                  // 静态乘区（可选），用 1 + mult 加法
+  startShieldRatio: 0.18,                // 开战自护盾（可选）
+  startShieldAlliesRatio: 0.10,          // 开战为同伴上护盾（可选）
+  rewardMultiplier: 1.6,                 // 奖励乘区（可选）
+  hooks: [{ on: 'damaged', handler: 'affixThorns' }],   // 钩子（可选）
+}
+```
+
+三条已经踩出来的规则：
+
+1. **钩子是热路径上的真代码**——`affixes.js` 的头注释就是契约：能用
+   `stats` / 状态表达的就别写钩子。目前全系统只有 `affixRegen` 与
+   `affixThorns` 两个钩子。
+2. **Boss 禁抽纯强度词缀**。`BOSS_BANNED = { swift, savage }`：Boss 的
+   属性包本来就大，×1.3 的速度就是「游戏决定你输」。Boss 池只留
+   改变打法的东西（护盾 / 再生 / 荆棘 / 贪婪）。
+3. **乘区用 `1 + mult` 加法**，与装备的 `+Pct` 语义一致——不要写成
+   `× (1 + mult)` 之外的第二种乘法。
+
+加新词缀不需要碰引擎：写进 `AFFIXES` 表即会被两个池子自动抽取。
+
+---
+
 ## 八、加一个地图节点
 
 **文件：`src/core/world-data.js`**
@@ -631,7 +755,8 @@ haven_town: {
 - 所有节点都从起点可达（否则报「不可达节点」）
 - 所有连接都是双向的（单向连接会报错）
 - 遭遇表里的敌人都存在
-- 商店里的装备都存在
+- 商店里的装备**和消耗品**都存在，且至少上架一件消耗品
+- 敌人掉落表引用的道具都存在
 
 ---
 
@@ -704,6 +829,23 @@ STARTING_INVENTORY: [
   { item: 'frost_grenade', count: 3 },
 ]
 ```
+
+### 商店与掉落
+
+消耗品也进商店（价格**以 `items.js` 的 `price` 为准**，商店条目只是展示）：
+
+```js
+// world-data.js
+shop: {
+  stock: [
+    { item: 'frost_grenade', price: 280 },   // 与 ITEMS.price 保持一致
+  ],
+}
+```
+
+每个敌人的 `drops` 见第六节。战斗内能用几次道具由
+`rules.js` 的 `BALANCE.MAX_ITEMS_PER_BATTLE`（当前 3）控制；
+客户端的「道具」按钮与预算显示直接读服务端视图，改常量不需要改 UI。
 
 ---
 
