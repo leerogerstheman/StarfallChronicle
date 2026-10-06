@@ -23,7 +23,7 @@ const enemies = require('../src/core/enemies');
 const { CHARACTERS, getCharacter, EQUIPMENT, getEquipment } = require('../src/core/characters');
 const { STATUSES, getStatus } = require('../src/core/status');
 const { WORLD, unreachableNodes, getNode } = require('../src/core/world-data');
-const { ITEMS } = require('../src/core/items');
+const { ITEMS, getItem } = require('../src/core/items');
 const progression = require('../src/core/progression');
 const { Rng } = require('../src/core/rng');
 const { resolveDamage, defenceFactor, levelFactor, elementInteraction } = require('../src/core/damage');
@@ -227,9 +227,13 @@ check('遭遇组里的敌人都存在', () => {
 check('商店商品都存在', () => {
   const problems = [];
   for (const entry of WORLD.shop.stock) {
-    if (!EQUIPMENT[entry.item]) problems.push(`未知装备 ${entry.item}`);
+    // The shop stocks gear *and* consumables; both must resolve and be priced.
+    if (!EQUIPMENT[entry.item] && !getItem(entry.item)) problems.push(`未知商品 ${entry.item}`);
     if (!(entry.price > 0)) problems.push(`${entry.item} 价格非法`);
   }
+  // A shop that sells only gear has no consumable loop — that was the v0.2.0
+  // state, and the whole reason items were "unused" in battle.
+  assert(WORLD.shop.stock.some((s) => getItem(s.item)), '商店应至少上架一件消耗品');
   assert(problems.length === 0, problems.join('; '));
   return `${WORLD.shop.stock.length} 项商品`;
 });
@@ -1050,6 +1054,132 @@ check('召唤有并发上限与累计上限', () => {
   assert(livingAdds <= policy.summonCap, `场上召唤物 ${livingAdds} 应 <= ${policy.summonCap}`);
   assert(totalAdds <= policy.summonTotalCap, `累计召唤 ${totalAdds} 应 <= ${policy.summonTotalCap}`);
   return `场上 ${livingAdds}/${policy.summonCap}，累计 ${totalAdds}/${policy.summonTotalCap}`;
+});
+
+// ===========================================================================
+// 道具系统：useItem、每场预算、回生药剂、AI 紧急道具、商店购买
+//
+// 这一节守卫的是 v0.2.0 的真实缺陷：`Battle.useItem` 从一开始就建好了，
+// 却没有任何入口能触达它——商店只卖装备、客户端没有道具按钮、敌人 AI
+// 也不会用药。等价效果是"道具系统整体不可用"。
+// ===========================================================================
+
+check('道具：治疗药水生效并计入每场预算', () => {
+  const battle = makeBattle({ level: 12 });
+  const ally = battle.livingAllies[0];
+  ally.hp = 1;
+  assert(battle.useItem(ally, 'heal_potion', ally.uid) === true, '治疗药水应使用成功');
+  assert(ally.hp > 1, '治疗药水应实际回复生命');
+  assert(battle.itemsUsed === 1, `道具计数应为 1，实际 ${battle.itemsUsed}`);
+  const view = battle.toView();
+  assert(view.itemsBudget.used === 1 && view.itemsBudget.limit === BALANCE.MAX_ITEMS_PER_BATTLE,
+    'toView 应暴露 itemsBudget 供客户端显示');
+
+  // 连用到封顶之后，下一次必须被拒绝，且失败的尝试不计数——
+  // 否则一次误触就会白白吃掉本来就只有 3 次的预算。
+  battle.useItem(ally, 'greater_potion', ally.uid);
+  battle.useItem(ally, 'greater_potion', ally.uid);
+  const capped = battle.itemsUsed;
+  assert(capped === BALANCE.MAX_ITEMS_PER_BATTLE, `计数应封顶 ${BALANCE.MAX_ITEMS_PER_BATTLE}，实际 ${capped}`);
+  assert(battle.useItem(ally, 'heal_potion', ally.uid) === false, '超过每场上限应失败');
+  assert(battle.itemsUsed === capped, '被拒绝的使用不应再计数');
+  return `${capped}/${BALANCE.MAX_ITEMS_PER_BATTLE} 次后拒绝`;
+});
+
+check('道具：回生药剂复活指名的倒下队友（单目标语义）', () => {
+  const battle = makeBattle({ level: 12, party: ['ayaha', 'rinne', 'elise'], enemies: [{ id: 'rotgrub' }] });
+  const [caster, first, second] = battle.livingAllies;
+  first.applyDamage(1e9);
+  second.applyDamage(1e9);
+  assert(!first.alive && !second.alive, '前段：两名队友应已倒下');
+
+  assert(battle.useItem(caster, 'revival_flask', first.uid) === true, '回生药剂应使用成功');
+  // 'downed' 选择器会答出全部倒下队友；效果层必须收窄到指名的那一个，
+  // 否则一枚 320 金币的药剂等于群体复活，商店定价就崩了。
+  assert(first.alive && first.hp > 0, '指名的倒下队友应被复活');
+  assert(first.hp === Math.round(first.resolveStats().maxHp * 0.5), '复活生命应为 50% 最大生命');
+  assert(!second.alive, '未指名的倒下队友不应被顺带复活');
+});
+
+check('AI：声明 itemKit 的敌人会为濒危队友喂药，并受双重预算约束', () => {
+  const { chooseEnemyAction } = require('../src/battle/ai');
+  const { ACTION } = require('../src/battle/action-constants');
+  const battle = makeBattle({ level: 12, enemies: [{ id: 'rotgrub' }, { id: 'larva' }] });
+  const actor = battle.enemies[0];
+  const hurt = battle.enemies[1];
+  actor.aiPolicy = { policy: 'aggressive', itemKit: [{ id: 'heal_potion', count: 1 }], itemUseBelowHpRatio: 0.5 };
+  hurt.hp = Math.round(hurt.resolveStats().maxHp * 0.2);
+
+  const d1 = chooseEnemyAction(battle, actor);
+  assert(d1.type === ACTION.ITEM && d1.target === hurt.uid, `第一次应指向受伤队友的道具，实际 ${d1.reason || d1.type}`);
+  const d2 = chooseEnemyAction(battle, actor);
+  assert(d2.type !== ACTION.ITEM, 'count:1 的单项只应打出一次，耗尽后应回退到普通行动');
+  // 敌人在任何阶段都不应吞掉玩家的共享预算。
+  assert(battle.itemsUsed === 0, `敌方道具不应计入玩家预算，实际 ${battle.itemsUsed}`);
+});
+
+check('AI：敌方整个回合的道具行动不会让日志崩溃', () => {
+  // 这是第一个道具块的真实崩溃：`runEnemyTurn` 无条件调用
+  // `getSkill(decision.skill).name`，而道具决策没有 skill 字段。
+  const battle = makeBattle({ level: 12, enemies: [{ id: 'rotgrub' }, { id: 'larva' }] });
+  const actor = battle.enemies[0];
+  const hurt = battle.enemies[1];
+  actor.aiPolicy = { policy: 'aggressive', itemKit: 'heal_potion', itemUseBelowHpRatio: 0.5 };
+  hurt.hp = Math.round(hurt.resolveStats().maxHp * 0.2);
+  const before = hurt.hp;
+
+  battle.takeTurn(actor, null);
+  assert(hurt.hp > before, `急救应实际回复受伤队友，${before} -> ${hurt.hp}`);
+  assert(battle.itemsUsed === 0, '敌方回合不应消耗玩家预算');
+});
+
+check('商店：购买消耗品进背包，而非装备池', () => {
+  // 分支按 entry 存在与否的旧版会把消耗品买进 ownedGear——永远用不了。
+  const { Game } = require('../src/world/game');
+  const game = new Game({ party: ['ayaha'], level: 8, gold: 9999, seed: 1 });
+  const slot = () => game.inventory.find((e) => e.item === 'heal_potion');
+  const before = slot() ? slot().count : 0;
+  const res = game.buy('heal_potion');
+  assert(res.ok && res.purchased.kind === 'consumable', `应按消耗品购买，实际 ${JSON.stringify(res.purchased || res)}`);
+  assert(slot().count === before + 1, `数量应 +1，${before} -> ${slot().count}`);
+  assert(!(game.ownedGear || new Set()).has('heal_potion'), '消耗品不应被登记为装备');
+
+  const flask = game.buy('revival_flask');
+  assert(flask.ok, '回生药剂应可购买');
+  assert(game.inventory.some((e) => e.item === 'revival_flask'), '回生药剂应进入背包');
+
+  const unknown = game.buy('nonexistent_item');
+  assert(!unknown.ok && unknown.reason === 'notSold', '未知商品应被拒绝');
+});
+
+check('掉落：敌人掉落表引用的道具都存在', () => {
+  const problems = [];
+  for (const e of Object.values(enemies.ENEMIES)) {
+    for (const d of e.drops || []) {
+      if (!getItem(d.item)) problems.push(`${e.id}: 未知掉落 ${d.item}`);
+      if (d.chance != null && (d.chance <= 0 || d.chance > 1)) problems.push(`${e.id}: ${d.item} 概率非法`);
+    }
+  }
+  assert(problems.length === 0, problems.join('; '));
+  assert(Object.values(enemies.ENEMIES).every((e) => (e.drops || []).length), '每个敌人都应有掉落表（可以为空 roll）');
+});
+
+check('掉落：Boss 的回生药剂是保底掉落', () => {
+  const battle = makeBattle({ level: 16, enemies: [{ id: 'ashen_king' }], isBoss: true, seed: 1234 });
+  battle.endBattle(PHASE.WON);
+  assert(battle.rewards.drops.some((d) => d.item === 'revival_flask' && d.count === 1),
+    `Boss 应保底掉落回生药剂，实际 ${JSON.stringify(battle.rewards.drops)}`);
+});
+
+check('掉落：同一战斗种子产出完全相同的掉落', () => {
+  const roll = () => {
+    const b = makeBattle({ level: 12, enemies: [{ id: 'rotgrub' }, { id: 'rotgrub' }], seed: 42 });
+    b.endBattle(PHASE.WON);
+    return b.rewards.drops;
+  };
+  const first = roll();
+  const second = roll();
+  assert(JSON.stringify(first) === JSON.stringify(second), '同种子同掉落');
 });
 
 // ===========================================================================

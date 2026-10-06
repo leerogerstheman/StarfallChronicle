@@ -336,6 +336,46 @@ define('onBrokenMark', ({ battle, actor, breaker }) => {
 });
 
 // ===========================================================================
+// 敌方词缀钩子（enemy affixes）
+// ===========================================================================
+
+/**
+ * 「再生」：每回合结束时回复一部分最大生命。
+ *
+ * Deliberately a *turn-end* hook rather than a `regen`-style status. An affix
+ * should read as a property of the monster in the encounter panel, not as one
+ * more chip in a status list a player has to mouse over mid-fight.
+ */
+define('affixRegen', ({ battle, actor, hook }) => {
+  if (!actor || !actor.alive || actor.side !== 'enemy') return;
+  const ratio = hook.ratio != null ? hook.ratio : 0.04;
+  const amount = Math.round(actor.resolveStats().maxHp * ratio);
+  if (amount <= 0) return;
+  battle.applyHealing(actor, actor, amount, { cause: 'affixRegen' });
+});
+
+/**
+ * 「荆棘」：受到直接攻击时反弹一部分伤害。
+ *
+ * Fires on `damaged` and guards itself the same way the `reflect` status does:
+ * the reflection is marked `isReflect` and the hook ignores reflected damage,
+ * so a thorns monster cannot reflect its own reflection into an infinite loop.
+ */
+define('affixThorns', ({ battle, actor, hook, source, amount, isReflect, isDot }) => {
+  if (!actor || !source || !source.alive || actor.side !== 'enemy') return;
+  if (isReflect || isDot) return;
+  if (!amount || amount <= 0) return;
+  const ratio = hook.ratio != null ? hook.ratio : 0.16;
+  const back = Math.round(amount * ratio);
+  if (back <= 0) return;
+  battle.log.push(EVENTS.INFO, {
+    message: `${actor.name} 的「${hook.affixName || '荆棘'}」刺了回来`,
+    uid: actor.uid, kind: 'thorns', amount: back,
+  });
+  battle.dealDamage(actor, source, back, { cause: 'affixThorns', isReflect: true });
+});
+
+// ===========================================================================
 // 运行 ctx.postDamage 队列
 // ===========================================================================
 

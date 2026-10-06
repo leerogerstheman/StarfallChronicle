@@ -1044,6 +1044,73 @@ body::after {
 }
 .target-hint { font-size: 12px; color: var(--warn); }
 
+/* Item picker overlay ------------------------------------------------------
+   A modal-lite: dark wash plus a centred panel. Shares the backdrop idiom of
+   `#modal` but stays inside the battle screen, because the bag is a *combat*
+   decision and must not cover the field while the player reads HP bars. */
+
+.item-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6,8,14,.66);
+  z-index: 70;
+  animation: fade-up var(--t-mid) var(--ease) both;
+}
+.item-panel {
+  width: min(420px, 92%);
+  max-height: 64%;
+  display: flex;
+  flex-direction: column;
+  padding: 18px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line-bright);
+  border-radius: 14px;
+  box-shadow: 0 18px 60px rgba(0,0,0,.5);
+}
+.item-title { font-size: 14px; font-weight: 600; letter-spacing: 1px; }
+.item-list { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.item-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  background: rgba(255,255,255,.02);
+  transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.item-row:hover { border-color: rgba(255,209,102,.55); background: rgba(255,209,102,.06); }
+.item-row.is-disabled { opacity: .42; cursor: default; }
+.item-row.is-disabled:hover { border-color: var(--line); background: none; }
+.item-icon { font-size: 20px; width: 28px; text-align: center; }
+.item-info { min-width: 0; }
+.item-name { font-size: 13px; font-weight: 600; }
+.item-desc { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.result-drops {
+  text-align: center;
+  font-size: 12px;
+  color: var(--gold);
+  margin: 10px 0 2px;
+}
+
+/* Elite affix chips — the telegraph for "this group rolled a modifier" */
+.affix-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.affix-chip {
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 99px;
+  border: 1px solid var(--enemy-dim);
+  color: var(--warn);
+  background: rgba(255,171,74,.08);
+}
+.affix-chip.tier-3 { border-color: var(--accent); color: var(--accent-bright); background: rgba(139,124,246,.10); }
+
 /* Ultimate interrupt alert ------------------------------------------------ */
 
 .ult-alert {

@@ -90,6 +90,8 @@ defineEnemy({
   },
   exp: 42,
   gold: 18,
+  /** Wartime beat: trash can top the potion bottle up. */
+  drops: [{ item: 'heal_potion', chance: 0.35 }],
 });
 
 defineEnemy({
@@ -107,6 +109,7 @@ defineEnemy({
   ai: { policy: 'aggressive', skillPreference: { enemy_claw: 1 }, targeting: 'random' },
   exp: 18,
   gold: 7,
+  drops: [{ item: 'heal_potion', chance: 0.20 }],
 });
 
 // ---------------------------------------------------------------------------
@@ -131,9 +134,20 @@ defineEnemy({
     summonCap: 4,
     skillPreference: { enemy_swarm_call: 0.30, enemy_spit: 0.35, enemy_claw: 0.35 },
     targeting: 'lowestHp',
+    /**
+     * The matriarch nurses her swarm: one potion for a fried comrade. Reading
+     * it in the AI log (*why* is what the reason field carries) is what keeps
+     * it fair — the player sees the decision coming the same way they see a
+     * finisher telegraph.
+     */
+    itemKit: 'heal_potion',
+    itemKitLimit: 1,
+    itemUseBelowHpRatio: 0.35,
   },
   exp: 78,
   gold: 34,
+  // The wave lead teachs that bigger fights give better items.
+  drops: [{ item: 'remedy', chance: 0.45 }],
 });
 
 // ---------------------------------------------------------------------------
@@ -167,9 +181,26 @@ defineEnemy({
     /** Fortifies only when it has taken meaningful damage this battle. */
     fortifyBelowHpRatio: 0.75,
     targeting: 'highestAtk',
+    /**
+     * The elite carries exactly one real potion (count: 1) and will not burn a
+     * turn on it until a *comrade* is dying — it is a lone guardian, so its own
+     * wounds do not qualify (`badlyHurtEnemy` excludes the actor). One use is
+     * the difference between "the elite was harder than expected" and "the
+     * elite out-healed the party", which is the line the first draft crossed.
+     */
+    itemKit: [{ id: 'greater_potion', count: 1 }],
+    itemKitLimit: 1,
+    itemUseBelowHpRatio: 0.30,
   },
   exp: 260,
   gold: 140,
+  // Elites pay in consumables precisely because they are the hard-but-farmable
+  // tier: a guaranteed potion plus a coin-flip drink rewards the player for
+  // repeating the fight the "intended" way (break + support rotation).
+  drops: [
+    { item: 'greater_potion', chance: 0.8 },
+    { item: 'energy_drink', chance: 0.6 },
+  ],
   /** Elite fights get an extra opening beat in the narration. */
   intro: '守卫者的独眼亮起，整条走廊开始震颤。',
 });
@@ -284,6 +315,13 @@ defineEnemy({
   ],
   exp: 920,
   gold: 640,
+  // A boss drop is promised, not rolled: clearing the demo should hand the
+  // player exactly one revival flask, so the final push never reads as a
+  // resource dead end. `chance` omitted means 1.0.
+  drops: [
+    { item: 'revival_flask' },
+    { item: 'ice_crystal', chance: 0.8 },
+  ],
   intro: '王座上的灰烬聚拢成形。它已经等了几百年，只为再烧一次。',
 });
 
@@ -312,6 +350,8 @@ defineEnemy({
   },
   exp: 60,
   gold: 22,
+  // Adds do not want pity loot; the bomb is a wink at "you died violently".
+  drops: [{ item: 'bomb', chance: 0.25 }],
 });
 
 // ---------------------------------------------------------------------------

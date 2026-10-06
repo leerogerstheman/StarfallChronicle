@@ -152,6 +152,17 @@ const WORLD = {
     name: '旅人街 · 军需处',
     greeting: '钱货两清，概不赊账。',
     stock: [
+      // Consumables use the price from `core/items.js` verbatim — one source of
+      // truth for item pricing; equipment keeps its entries here.
+      { item: 'heal_potion', price: 60 },
+      { item: 'greater_potion', price: 180 },
+      { item: 'remedy', price: 150 },
+      { item: 'energy_drink', price: 200 },
+      { item: 'smoke_bomb', price: 140 },
+      { item: 'bomb', price: 120 },
+      { item: 'ice_crystal', price: 260 },
+      { item: 'alchemy_flask', price: 320 },
+      { item: 'revival_flask', price: 320 },
       { item: 'gear_swift_boots', price: 240 },
       { item: 'gear_guard_ring', price: 260 },
       { item: 'gear_crit_lens', price: 420 },

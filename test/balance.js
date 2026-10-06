@@ -30,6 +30,7 @@ const { getStatus } = require('../src/core/status');
 const { Battle } = require('../src/battle/battle');
 const { PHASE } = require('../src/battle/action-constants');
 const { WORLD } = require('../src/core/world-data');
+const { rollFightAffixes } = require('../src/core/affixes');
 
 const argv = process.argv.slice(2);
 const RUNS = numberArg('--runs', 60);
@@ -75,6 +76,7 @@ const ENCOUNTERS = [
     party: ['ayaha', 'rinne', 'rin', 'byakuya'],
     enemies: [{ id: 'abyss_sentinel' }],
     levels: [13, 14, 15, 16],
+    isElite: true,
     expect: { winRate: [0.55, 1.0], maxRounds: 40, minRounds: 4 },
     note: '只用风/雷弱点，逼玩家换编队；应需要真正的战技循环',
   },
@@ -238,6 +240,11 @@ function makeBattle(spec, level, seed) {
     const count = e.count || 1;
     for (let i = 0; i < count; i++) enemies.push({ id: e.id });
   }
+  // Mirror the shipped rule (`game._beginBattle`): elites and bosses roll
+  // affixes from the battle seed. Without this the 60-run numbers measure an
+  // easier fight than the one players actually meet.
+  const affixIds = rollFightAffixes(seed, { isBoss: !!spec.isBoss, isElite: !!spec.isElite });
+  for (const e of enemies) if (affixIds.length) e.affixes = affixIds;
   return new Battle({
     allies: sheets,
     enemies,

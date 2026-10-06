@@ -49,6 +49,7 @@ const { Entity, resetEntitySerial } = require('../core/entity');
 const { getStatus } = require('../core/status');
 const { getSkill } = require('../core/skills');
 const { getEnemy } = require('../core/enemies');
+const { getAffix, affixView } = require('../core/affixes');
 const { resolveDamage, resolveToughness, resolveHeal, resolveDot, resolveBreakDamage } = require('../core/damage');
 const { executeSkill, applyStatus, tickStatuses, resolveSelector, isBeneficialSelector } = require('./resolve');
 const { chooseEnemyAction } = require('./ai');
@@ -100,6 +101,15 @@ class Battle {
     /** Set while an extra turn is being granted; see `grantExtraTurn`. */
     this.extraTurnQueue = [];
 
+    /** Follow-up bookkeeping: per-(unit,skill) counters and the party ceiling. */
+    this.followupLedger = new Map();
+    this.followupsThisRound = 0;
+    this._followupDepth = 0;
+
+    /** Consumables the party may still use this fight. Shared, not per-unit. */
+    this.maxItemsPerBattle = BALANCE.MAX_ITEMS_PER_BATTLE;
+    this.itemsUsed = 0;
+
     this.allies = [];
     this.enemies = [];
     /** Per-unit AI memory (turn counters, script positions). */
@@ -113,10 +123,11 @@ class Battle {
     this._buildAllies(config.allies || []);
     this._buildEnemies(config.enemies || []);
 
-    // Enemies act with their definition's skill list; the AI reads `aiPolicy`.
-    for (const enemy of this.enemies) {
-      enemy.hooks = (enemy.def && enemy.def.hooks) || [];
-    }
+    // Affix shields land here rather than inside `_buildEnemies`: a shield is a
+    // post-construction effect (it needs `resolveStats` and the status engine),
+    // and keeping it out of the builder is what lets `summon()` reuse the
+    // builder without re-granting barriers to fresh adds.
+    this._applyAffixShields();
 
     // A battle is live from construction: `advanceToNextTurn` is the only entry
     // point a caller needs, and requiring an explicit `start()` before it was a
@@ -187,6 +198,7 @@ class Battle {
       }
       entity.slot = index;
       entity.hooks = sheet.hooks || [];
+      entity.followups = sheet.followups || [];
       entity.memberRef = sheet.member || null;
       this.allies.push(entity);
     });
@@ -221,6 +233,28 @@ class Battle {
         const base = def.baseStats[key];
         stats[key] = BALANCE.GROWTH[key] ? base * (1 + BALANCE.GROWTH[key] * Math.max(0, level - 1)) : base;
       }
+
+      // Elite affixes, rolled per encounter and applied to *every* enemy in the
+      // group — that is what makes a room modifier read as a room modifier
+      // rather than as one monster being oddly strong. `stats` already holds the
+      // effective bundle, so multiplying here and letting the write-back below
+      // divide the growth factor out is the same move the code above makes.
+      const affixIds = Array.isArray(spec.affixes) ? spec.affixes : [];
+      let toughnessMult = 1;
+      const affixHooks = [];
+      let rewardMult = 1;
+      for (const id of affixIds) {
+        const affix = getAffix(id);
+        if (!affix) continue;
+        if (affix.stats) {
+          for (const [key, mult] of Object.entries(affix.stats)) {
+            if (key === 'toughness') { toughnessMult *= 1 + mult; continue; }
+            if (stats[key] != null) stats[key] *= 1 + mult;
+          }
+        }
+        if (affix.rewardMultiplier) rewardMult *= affix.rewardMultiplier;
+        for (const hook of affix.hooks || []) affixHooks.push({ ...hook, affixName: affix.name });
+      }
       const entity = new Entity({
         id: spec.key || `${def.id}_${index}`,
         name: spec.name || def.name,
@@ -230,7 +264,7 @@ class Battle {
         baseStats: stats,
         weaknesses: def.weaknesses,
         resist: def.resist,
-        toughness: spec.toughness || def.toughness,
+        toughness: Math.max(1, Math.round((spec.toughness || def.toughness) * toughnessMult)),
         breakDamageMult: def.breakDamageMult,
         skills: def.skills,
         sprite: def.sprite,
@@ -252,8 +286,18 @@ class Battle {
       entity.def = def;
       entity.aiPolicy = def.ai;
       entity.slot = slotOffset + index;
-      entity.hooks = def.hooks || [];
-      entity.rewards = { exp: def.exp || 0, gold: def.gold || 0 };
+      // Affix hooks are merged with the definition's own, each tagged with the
+      // affix's display name so the log can say which modifier did the thing.
+      entity.hooks = [...(def.hooks || []), ...affixHooks];
+      entity.followups = def.followups || [];
+      entity.affixes = affixIds.filter((id) => getAffix(id)).slice();
+      entity.rewards = {
+        exp: Math.round((def.exp || 0) * rewardMult),
+        gold: Math.round((def.gold || 0) * rewardMult),
+        // The *table*, not the roll: `endBattle` rolls it so the outcome lives
+        // in the same deterministic sequence as every other random decision.
+        drops: def.drops || [],
+      };
       this.enemies.push(entity);
       // Do not clobber an existing memory record: a summoner's memory holds its
       // lifetime summon budget, and `summon()` calls `_buildEnemies` to create
@@ -263,6 +307,35 @@ class Battle {
         this.aiMemory.set(entity.uid, { turns: 0, scriptIndex: 0, fired: new Set() });
       }
     });
+  }
+
+  /**
+   * Give every affix-declared shield its starting value.
+   *
+   * One pass over the roster, no recursion: a shield is a status, and a status
+   * cannot itself re-enter construction.
+   */
+  _applyAffixShields() {
+    for (const unit of this.enemies) {
+      for (const id of unit.affixes || []) {
+        const affix = getAffix(id);
+        if (!affix) continue;
+        const stats = unit.resolveStats();
+        if (affix.startShieldRatio) {
+          this.applyShield(unit, unit, stats.maxHp * affix.startShieldRatio, {
+            force: true, silent: true, duration: 99,
+          });
+        }
+        if (affix.startShieldAlliesRatio) {
+          for (const other of this.enemies) {
+            if (other === unit || !other.alive) continue;
+            this.applyShield(unit, other, other.resolveStats().maxHp * affix.startShieldAlliesRatio, {
+              force: true, silent: true, duration: 99,
+            });
+          }
+        }
+      }
+    }
   }
 
   /** Compact unit description used in events. */
@@ -378,7 +451,12 @@ class Battle {
     this.tick++;
     // A crude but readable "round" counter: roughly when a speed-100 unit would
     // have acted once. Used only for display.
-    if (this.tick % 100 === 0) this.round++;
+    if (this.tick % 100 === 0) {
+      this.round++;
+      // Follow-up limits are per-round, so the ledger needs a new round to be
+      // a limit rather than a profit.
+      this.followupsThisRound = 0;
+    }
   }
 
   /**
@@ -578,7 +656,10 @@ class Battle {
         result = this.attemptFlee(unit);
         break;
       case ACTION.ITEM:
-        result = this.useItem(unit, decision.item, decision.target);
+        // `isEnemy` decides whose budget the use draws on: the shared
+        // `itemsUsed` counter is the *player's*, and an enemy drinking its own
+        // declared kit must neither spend it nor be blocked by it.
+        result = this.useItem(unit, decision.item, decision.target, { isEnemy: unit.isEnemy });
         break;
       default:
         result = this._defaultAction(unit);
@@ -725,7 +806,31 @@ class Battle {
     }
 
     // Scripts keyed on the skill (e.g. boss phase transitions).
-    scripts.runHooks(this, unit, 'afterSkill', { skill, result });
+    scripts.runHooks(this, unit, 'afterSkill', { skill, result, target: validTarget });
+
+    // Follow-up triggers. Two extension events:
+    //   - `allyUltimate`: fired on the *other* allies — a big hit is the cue for
+    //     a teammate to pile on. Not on the caster, since a self-triggering
+    //     chain would just double every ultimate.
+    //   - `afterAllySkill`: fired on the caster of an ordinary skill/basic.
+    //     No character uses it yet (ayaha/rinne trigger on `break`, elise on
+    //     `allyHeal`); it is the documented slot for "chains off your own
+    //     turn" designs, and costs nothing while unused. Follow-up skills
+    //     themselves are `kind: 'followup'`, which this filter excludes — the
+    //     depth cap is a backstop, not the primary break. Enemy followups are
+    //     constructed but not dispatched: nothing tactical needs them yet, and
+    //     an unannounced free enemy action would read as a cheat.
+    if (unit.side === 'ally' && (skill.kind === 'ultimate' || skill.kind === 'skill' || skill.kind === 'basic')) {
+      const event = skill.kind === 'ultimate' ? 'allyUltimate' : 'afterAllySkill';
+      if (event === 'allyUltimate') {
+        for (const ally of this.allies) {
+          if (ally === unit || !ally.alive) continue;
+          this._triggerFollowups(ally, event, { caster: unit, skill, target: validTarget });
+        }
+      } else {
+        this._triggerFollowups(unit, event, { caster: unit, skill, target: validTarget });
+      }
+    }
 
     return result;
   }
@@ -768,16 +873,31 @@ class Battle {
   }
 
   /** Consumable items — thin now, but the hook exists for the Atelier layer. */
-  useItem(unit, itemId, targetUid) {
+  useItem(unit, itemId, targetUid, options = {}) {
     const { getItem } = require('../core/items');
     const item = getItem(itemId);
     if (!item) return false;
+    if (!options.isEnemy && this.itemsUsed >= this.maxItemsPerBattle) {
+      this.log.push(EVENTS.SKILL_FAILED, {
+        uid: unit.uid, skill: `item:${itemId}`, reason: 'itemBudget', used: this.itemsUsed,
+      });
+      return false;
+    }
     const target = (targetUid && this.findUnit(targetUid)) || unit;
     this.log.push(EVENTS.SKILL_CAST, {
       uid: unit.uid, name: unit.name, skill: `item:${itemId}`, skillName: item.name, skillKind: 'item', icon: item.icon,
     });
     const ctx = { battle: this, actor: unit, skill: { ...item, element: item.element || 'physical', kind: 'item', target: item.target }, primaryTarget: target, rng: this.rng, options: {} };
     executeSkill(ctx);
+    // Counted after the effect lands: a use that was blocked by a control
+    // status never got its chance to matter, so it does not cost the party.
+    if (!options.isEnemy) this.itemsUsed += 1;
+    this.log.push(EVENTS.INFO, {
+      message: options.isEnemy
+        ? `${unit.name} 用了 ${item.name}`
+        : `${unit.name} 用了 ${item.name}，本场已用 ${this.itemsUsed}/${this.maxItemsPerBattle}`,
+      kind: 'itemUsed', uid: unit.uid, item: itemId, used: this.itemsUsed,
+    });
     return true;
   }
 
@@ -822,6 +942,123 @@ class Battle {
     return { ok: true };
   }
 
+  // =========================================================================
+  // Follow-up attacks
+  // =========================================================================
+
+  /**
+   * Fire every follow-up `unit` declares for `event`.
+   *
+   * This is the engine's team-play primitive. A follow-up is a *free* skill
+   * cast — no skill point, no turn, no gauge reset — which is why each one is
+   * capped per round and the whole party sits under a shared ceiling:
+   * `BALANCE.MAX_FOLLOWUPS_PER_ROUND`. Without that ceiling "everyone attacks
+   * again" is what the system degenerates into.
+   *
+   * `MAX_FOLLOWUP_DEPTH` stops a follow-up from triggering another. The depth
+   * is deliberately one, not a loop counter: a chain that can reach itself is
+   * not a synergy, it is a crash waiting for a particular unlucky seed.
+   */
+  _triggerFollowups(unit, event, payload = {}) {
+    if (!unit || !unit.alive || this.phase !== PHASE.ACTIVE) return;
+    if (this._followupDepth >= BALANCE.MAX_FOLLOWUP_DEPTH) return;
+    this._followupDepth = (this._followupDepth || 0) + 1;
+    try {
+      for (const spec of unit.followups || []) {
+        if (spec.on !== event) continue;
+        if (spec.chance != null && spec.chance < 1 && !this.rng.chance(spec.chance)) {
+          this._fuLog(unit, spec, 'skipped:chance', event);
+          continue;
+        }
+
+        const key = `${unit.uid}:${spec.skill}`;
+        let record = this.followupLedger.get(key);
+        if (!record) {
+          record = { round: null, roundUses: 0, battle: 0 };
+          this.followupLedger.set(key, record);
+        }
+        const freshRound = record.round !== this.round;
+        if (spec.limitPerRound != null && !freshRound && record.roundUses >= spec.limitPerRound) {
+          this._fuLog(unit, spec, 'skipped:roundLimit', event);
+          continue;
+        }
+        if (spec.limitPerBattle != null && record.battle >= spec.limitPerBattle) {
+          continue;
+        }
+        if (this.followupsThisRound >= BALANCE.MAX_FOLLOWUPS_PER_ROUND) {
+          this._fuLog(unit, spec, 'skipped:partyLimit', event);
+          continue;
+        }
+
+        // The follow-up needs a living target on the legal side. If nothing
+        // qualifies (the broken enemy just died to the break, say) it simply
+        // does not fire, which reads correctly in play.
+        const targetUid = this._followupTarget(unit, spec, payload);
+        if (!targetUid) {
+          this._fuLog(unit, spec, 'skipped:noTarget', event);
+          continue;
+        }
+
+        this.followupsThisRound = (this.followupsThisRound || 0) + 1;
+        record.round = this.round;
+        record.roundUses = freshRound ? 1 : record.roundUses + 1;
+        record.battle += 1;
+
+        this.log.push(EVENTS.INFO, {
+          message: `${unit.name} 追加行动！`,
+          uid: unit.uid, kind: 'followup', skill: spec.skill, on: event,
+        });
+        const result = this.castSkill(unit, spec.skill, targetUid, { forFree: true, followup: true });
+        if (result === false) {
+          this.followupsThisRound = Math.max(0, this.followupsThisRound - 1);
+        }
+      }
+    } finally {
+      this._followupDepth -= 1;
+    }
+  }
+
+  /**
+   * Resolve a follow-up's target.
+   *
+   * `targetFrom` understands three things the generic selector cannot: the
+   * trigger's own target, "whoever the party hit", and "nobody in particular"
+   * (random enemy). Anything else defers to the skill's own `target` by passing
+   * `null`, which makes `castSkill` resolve the default.
+   */
+  _followupTarget(unit, spec, payload) {
+    const from = spec.targetFrom || 'skill';
+    if (from === 'triggerTarget' || from === 'payloadTarget') {
+      const target = payload && (payload.target || payload.patient);
+      return target && target.alive ? target.uid : null;
+    }
+    if (from === 'casterTarget') {
+      const target = payload && payload.target;
+      return target && target.alive ? target.uid : null;
+    }
+    if (from === 'randomEnemy') {
+      const pool = this.enemies.filter((e) => e.alive);
+      if (!pool.length) return null;
+      return pool[Math.floor(this.rng.next() * pool.length)].uid;
+    }
+    return null;
+  }
+
+  /** Cumulative follow-up state, for the view and for tests. */
+  followupSummary() {
+    const out = [];
+    for (const [key, rec] of this.followupLedger) out.push({ key, ...rec });
+    return { thisRound: this.followupsThisRound || 0, ledger: out };
+  }
+
+  _fuLog(unit, spec, reason, event) {
+    if (!this.debugVerbose) return;
+    this.log.push(EVENTS.INFO, {
+      message: `${unit.name} 的追击被跳过（${reason}）`,
+      uid: unit.uid, kind: 'followupSkip', skill: spec.skill, on: event,
+    });
+  }
+
   /**
    * Fire every queued ultimate.
    *
@@ -853,8 +1090,27 @@ class Battle {
   // Resources
   // =========================================================================
 
-  spendSkillPoints(amount, unit, cause) {
-    this.skillPoints = Math.max(0, this.skillPoints - amount);
+  /**
+   * Give a unit a shield worth `value` HP.
+   *
+   * Built on the `shield` status so it inherits the existing absorb rules
+   * (`shieldPool`, `absorbWithShield`, depletion, expiry, stacking) instead of
+   * growing a second shield implementation. Added as a method rather than left
+   * inside `resolve.js` because it is not an effect of a skill — it is a
+   * property of the encounter, and both a skill effect and an affix want the
+   * same behaviour.
+   */
+  applyShield(source, target, value, options = {}) {
+    if (!target || !target.alive || !(value > 0)) return { applied: 0 };
+    return this.applyStatus(source, target, {
+      status: 'shield',
+      value: Math.round(value),
+      duration: options.duration != null ? options.duration : BALANCE.DEFAULT_DURATION,
+      stacks: options.stacks,
+    }, { force: !!options.force, silent: !!options.silent });
+  }
+
+  spendSkillPoints(amount, unit, cause) {    this.skillPoints = Math.max(0, this.skillPoints - amount);
     this.log.push(EVENTS.SP_CHANGE, {
       uid: unit ? unit.uid : null, amount: -amount, total: this.skillPoints, cause: cause || 'spend',
     });
@@ -1060,6 +1316,19 @@ class Battle {
       this.dealDamage(target, source, back, { cause: 'reflect', isReflect: true, silent: true });
     }
 
+    // The target-side damage hook. `isReflect` marks the bounce-back so an
+    // affix that reflects cannot reflect its own reflection into a loop.
+    if (applied > 0) {
+      scripts.runHooks(this, target, 'damaged', {
+        source,
+        amount: applied,
+        element: options.element || 'physical',
+        cause: options.cause || 'attack',
+        isDot: !!options.isDot,
+        isReflect: !!options.isReflect,
+      });
+    }
+
     return { applied, killed: result.lethal, survivedLethal: result.survivedLethal };
   }
 
@@ -1090,6 +1359,18 @@ class Battle {
         overheal: Math.max(0, amount - healed),
         cause: options.cause || 'heal',
       });
+      // A friendly heal reaching a friendly patient is the `allyHeal` follow-up
+      // trigger. Fired on *every* ally — including the healer — because the
+      // natural reading of Elise's kit is "my own healing leaves a shield
+      // behind", and only excluding the patient keeps the shield target from
+      // doubling up as a trigger. A follow-up that itself heals cannot chain:
+      // `_followupDepth` is 1, which is enough to stop recursion.
+      if (target.side === 'ally' && !options.isFollowup) {
+        for (const ally of this.allies) {
+          if (!ally.alive) continue;
+          this._triggerFollowups(ally, 'allyHeal', { healer: source, patient: target, amount: healed });
+        }
+      }
     }
     return healed;
   }
@@ -1164,6 +1445,14 @@ class Battle {
     scripts.runHooks(this, source || target, 'break', { target, element: options.element });
     // The target's own scripts may want to react (phase transitions on break).
     if (target.def) scripts.runHooks(this, target, 'broken', { breaker: source });
+    // The `break` follow-up trigger. Scoped to the breaker on purpose: "I broke
+    // it" is a feat, and a hook that fired on every ally for every break would
+    // cap out on the first round of every fight.
+    if (source && source.alive) {
+      this._triggerFollowups(source, 'break', {
+        target, element: options.element, skill: options.skill,
+      });
+    }
   }
 
   /**
@@ -1353,10 +1642,20 @@ class Battle {
 
     let exp = 0;
     let gold = 0;
+    const drops = [];
     if (phase === PHASE.WON) {
       for (const enemy of this.enemies) {
         exp += (enemy.rewards && enemy.rewards.exp) || 0;
         gold += (enemy.rewards && enemy.rewards.gold) || 0;
+        // One roll per declared drop, in enemy order — declaration order, so a
+        // replay seeded the same way rolls the same way. No `chance` means
+        // guaranteed, which is how the boss's revival flask stays a promise.
+        for (const drop of (enemy.rewards && enemy.rewards.drops) || []) {
+          if (drop.chance != null && !this.rng.chance(drop.chance)) continue;
+          const seen = drops.find((d) => d.item === drop.item);
+          if (seen) seen.count += 1;
+          else drops.push({ item: drop.item, count: 1 });
+        }
       }
       // Survivors get a small top-up so a won fight is not a Pyrrhic one.
       for (const ally of this.livingAllies) {
@@ -1364,7 +1663,7 @@ class Battle {
         ally.applyHeal(Math.round(stats.maxHp * BALANCE.POST_BATTLE_HEAL_RATIO), stats);
       }
     }
-    this.rewards = { exp, gold, drops: [] };
+    this.rewards = { exp, gold, drops };
 
     const result = {
       phase,
@@ -1423,6 +1722,13 @@ class Battle {
       enemies: this.enemies.map((e) => this.unitView(e, false)),
       order: this.previewOrder(),
       pendingUltimates: this.pendingUltimates.map((p) => p.unitUid),
+      /**
+       * The consumable budget. Exposed rather than derived client-side because
+       * the *server* owns the rule; the client only shows the numbers, and a
+       * client-side guess would drift the moment a cap changed.
+       */
+      itemsBudget: { used: this.itemsUsed, limit: this.maxItemsPerBattle },
+      followups: this.followupSummary(),
       rewards: this.rewards,
       result: this.result || null,
     };
@@ -1443,6 +1749,11 @@ class Battle {
         };
       });
       view.canAct = this.phase === PHASE.ACTIVE && unit.alive;
+    } else {
+      // Affixes are player-facing by design — the telegraph IS the tactical
+      // information ("the elite is 迅捷, plan the break window"). Server-owned
+      // summary so a client can never show a fabricated affix.
+      view.affixes = affixView(unit.affixes);
     }
     return view;
   }

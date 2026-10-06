@@ -27,6 +27,7 @@ const skills = require('../core/skills');
 const { getStatus } = require('../core/status');
 const { Log } = require('../core/log');
 const { Rng } = require('../core/rng');
+const { rollFightAffixes } = require('../core/affixes');
 
 /** Where the session thinks the player is. */
 const MODE = {
@@ -298,10 +299,19 @@ class Game {
     // Each battle gets its own seed derived from the session seed, so a session
     // replays exactly but two encounters in one session are not clones.
     const battleSeed = (this.seed + this.rng.int(0, 0xffffff)) >>> 0;
+    // Elite/boss affixes roll from the *battle* seed, once, here — so the
+    // server view, the event log and any future replay all agree on them.
+    const affixIds = rollFightAffixes(battleSeed, {
+      isElite: !!config.isElite,
+      isBoss: !!config.isBoss,
+    });
+    const enemies = affixIds.length
+      ? config.enemies.map((e) => ({ ...e, affixes: affixIds }))
+      : config.enemies;
     this.battleLog = new Log();
     this.battle = new Battle({
       allies: this._partySheets(),
-      enemies: config.enemies,
+      enemies,
       seed: battleSeed,
       name: config.name,
       isBoss: !!config.isBoss,
@@ -511,6 +521,28 @@ class Game {
       return { ok: false, reason: 'notYourTurn', actor: actor.name };
     }
 
+    // An item is a turn like any other. Validated here, in the session layer,
+    // because the bag belongs to the *run* and only this object knows how many
+    // are left and how many the party has already spent this fight.
+    if (cmd.type === 'item') {
+      if (!cmd.item) return { ok: false, reason: 'noItemId' };
+      const held = this.inventory.find((e) => e.item === cmd.item);
+      if (!held || held.count <= 0) {
+        return { ok: false, reason: 'notInInventory', item: cmd.item };
+      }
+      if (battle.itemsUsed >= battle.maxItemsPerBattle) {
+        return {
+          ok: false, reason: 'itemBudget', used: battle.itemsUsed,
+          limit: battle.maxItemsPerBattle, item: cmd.item,
+        };
+      }
+      // Deduct before the turn: a throw that kills the last enemy still spends
+      // the item, which is the rule a player expects and the one that keeps the
+      // bag honest when the battle ends mid-action.
+      held.count -= 1;
+      if (held.count <= 0) this.inventory = this.inventory.filter((e) => e !== held);
+    }
+
     battle.takeTurn(actor, () => ({ type: cmd.type, skill: cmd.skill, target: cmd.target, item: cmd.item }));
 
     // `takeTurn` can end the battle (the killing blow, or a counter-attack that
@@ -563,12 +595,21 @@ class Game {
     const levelUps = [];
     let gold = 0;
     let exp = 0;
+    let drops = [];
 
     if (won) {
       // --- Rewards --------------------------------------------------------
       const rewards = battle.rewards;
       exp = rewards.exp;
       gold = rewards.gold;
+      // Consumable drops go to the shared bag, like shop purchases do. They are
+      // the loop-closer: a fight costs items, a win refunds a few.
+      for (const drop of rewards.drops || []) {
+        const slot = this.inventory.find((e) => e.item === drop.item);
+        if (slot) slot.count += drop.count;
+        else this.inventory.push({ item: drop.item, count: drop.count });
+      }
+      drops = (rewards.drops || []).map((d) => ({ ...d }));
       // Only survivors get EXP. That is harsh but it is the genre's convention,
       // and it makes the revive item meaningful.
       const survivors = battle.allies.filter((a) => a.alive);
@@ -609,6 +650,7 @@ class Game {
       isElite: wasElite,
       exp,
       gold,
+      drops,
       levelUps,
       survivors: battle.allies.filter((a) => a.alive).map((a) => ({ name: a.name, charId: a.id, hp: a.hp })),
       fallen: battle.allies.filter((a) => !a.alive).map((a) => ({ name: a.name, charId: a.id })),
@@ -700,25 +742,28 @@ class Game {
   buy(itemId) {
     const guard = this._requireTown('shop');
     if (guard) return guard;
+    // The branch on kind, not on `entry` existence: consumables are now also
+    // stocked with explicit prices, and branching on the stock entry sent their
+    // purchases into the gear pool (`ownedGear`) where they could never be used.
     const entry = WORLD.shop.stock.find((s) => s.item === itemId);
-    const item = getEquipment(itemId);
     const consumable = getItem(itemId);
+    const item = getEquipment(itemId);
     if (!entry && !consumable) return { ok: false, reason: 'notSold', itemId };
     const price = entry ? entry.price : consumable.price;
     if (this.gold < price) return { ok: false, reason: 'notEnoughGold', need: price, have: this.gold };
     this.gold -= price;
 
-    if (entry) {
-      // Equipment goes straight into the shared pool; the shop stocks unlimited
-      // copies, which is simpler than an inventory count and matches the genre.
-      this.ownedGear = this.ownedGear || new Set();
-      this.ownedGear.add(itemId);
-      return { ok: true, gold: this.gold, purchased: { id: itemId, name: item.name, kind: 'equipment' } };
+    if (consumable) {
+      const slot = this.inventory.find((e) => e.item === itemId);
+      if (slot) slot.count++;
+      else this.inventory.push({ item: itemId, count: 1 });
+      return { ok: true, gold: this.gold, purchased: { id: itemId, name: consumable.name, kind: 'consumable' } };
     }
-    const slot = this.inventory.find((e) => e.item === itemId);
-    if (slot) slot.count++;
-    else this.inventory.push({ item: itemId, count: 1 });
-    return { ok: true, gold: this.gold, purchased: { id: itemId, name: consumable.name, kind: 'consumable' } };
+    // Equipment goes straight into the shared pool; the shop stocks unlimited
+    // copies, which is simpler than an inventory count and matches the genre.
+    this.ownedGear = this.ownedGear || new Set();
+    this.ownedGear.add(itemId);
+    return { ok: true, gold: this.gold, purchased: { id: itemId, name: item.name, kind: 'equipment' } };
   }
 
   /** Equip an owned item on a character, swapping out whatever was there. */

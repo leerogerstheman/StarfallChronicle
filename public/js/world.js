@@ -460,19 +460,23 @@ const WorldUI = {
       return el('div', null, [
         el('p.muted', { text: shop.greeting, style: { marginBottom: '16px', fontSize: '12px' } }),
         el('div.shop-grid', null, shop.stock.map((entry) => {
-          const item = (State.data.equipment || []).find((e) => e.id === entry.item);
+          // The shop stocks both gear and consumables; each renders with its
+          // own tag line, since an equip slot label means nothing on a potion.
+          const item = (State.data.equipment || []).find((e) => e.id === entry.item)
+            || (State.data.items || []).find((i) => i.id === entry.item);
           if (!item) return null;
+          const isConsumable = item.kind === 'item';
           const affordable = gold >= entry.price;
           const equipLines = Object.entries(item)
-            .filter(([k]) => !['id', 'name', 'slot', 'rarity', 'desc'].includes(k))
+            .filter(([k]) => !['id', 'name', 'slot', 'rarity', 'desc', 'effects'].includes(k))
             .map(([k, v]) => `${STAT_LABELS[k] || k} ${typeof v === 'number' && v < 1 ? Fmt.pct(v) : Math.round(v)}`);
           return el('div.shop-item', null, [
             el('div.row-between', null, [
-              el('div.shop-item-name', { text: item.name }),
-              el('span.tag', { text: { weapon: '武器', boots: '鞋子', accessory: '饰品' }[item.slot] || item.slot }),
+              el('div.shop-item-name', { text: `${item.icon || ''} ${item.name}`.trim() }),
+              el('span.tag', { text: isConsumable ? '消耗品' : { weapon: '武器', boots: '鞋子', accessory: '饰品' }[item.slot] || item.slot }),
             ]),
             el('div.shop-item-desc', { text: item.desc }),
-            el('div.muted', { text: equipLines.join(' · '), style: { fontSize: '11px' } }),
+            isConsumable ? null : el('div.muted', { text: equipLines.join(' · '), style: { fontSize: '11px' } }),
             el('div.shop-item-foot', null, [
               el('span.price', { text: `◎ ${entry.price}` }),
               el('button.btn.btn-small', {

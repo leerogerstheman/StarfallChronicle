@@ -84,6 +84,12 @@ defineCharacter({
   },
   /** Passives that need code; `ayahaTalentBreak` lives in battle/scripts.js. */
   hooks: [{ on: 'break', handler: 'ayahaTalentBreak' }],
+  /**
+   * Follow-ups. `break` here fires on a break *this unit* dealt (the engine
+   * scopes the `break` event to the breaker), so the whole loop is "break →
+   * gust → act sooner again".
+   */
+  followups: [{ on: 'break', skill: 'ayaha_follow_gust', chance: 1, limitPerRound: 1, targetFrom: 'triggerTarget' }],
   unlock: {
     1: ['ayaha_talent'],
     6: [],
@@ -119,6 +125,8 @@ defineCharacter({
     talent: 'rinne_talent',
   },
   hooks: [{ on: 'damageDealt', handler: 'rinneTalentDetonate' }],
+  /** A break on a marked, burning body is her best detonation, so it fires twice. */
+  followups: [{ on: 'break', skill: 'rinne_follow_ash', chance: 1, limitPerRound: 1, targetFrom: 'triggerTarget' }],
   unlock: { 1: ['rinne_talent'] },
 });
 
@@ -150,6 +158,8 @@ defineCharacter({
     talent: 'rin_talent',
   },
   hooks: [{ on: 'statusApplied', handler: 'rinTalentFreeze' }],
+  /** Frost after anyone else's ultimate: turn a teammate's burst into setup. */
+  followups: [{ on: 'allyUltimate', skill: 'rin_follow_frost', chance: 0.7, limitPerRound: 1, targetFrom: 'randomEnemy' }],
   unlock: { 1: ['rin_talent'] },
 });
 
@@ -181,6 +191,8 @@ defineCharacter({
     talent: 'byakuya_talent',
   },
   hooks: [{ on: 'delayApplied', handler: 'byakuyaTalentHaste' }],
+  /** His follow-up aims at exactly what the ultimate hit, so it reads as one attack. */
+  followups: [{ on: 'allyUltimate', skill: 'byakuya_follow_bolt', chance: 1, limitPerRound: 1, targetFrom: 'casterTarget' }],
   unlock: { 1: ['byakuya_talent'] },
 });
 
@@ -212,6 +224,11 @@ defineCharacter({
     talent: 'elise_talent',
   },
   hooks: [{ on: 'turnStart', handler: 'eliseTalentSustain' }],
+  /**
+   * She heals constantly, so this fires a lot — hence the 0.6 chance and the
+   * party-wide follow-up ceiling keeping it in check.
+   */
+  followups: [{ on: 'allyHeal', skill: 'elise_follow_choir', chance: 0.6, limitPerRound: 1, targetFrom: 'triggerTarget' }],
   unlock: { 1: ['elise_talent'] },
 });
 

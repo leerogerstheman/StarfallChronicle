@@ -743,6 +743,110 @@ define({
 });
 
 // ===========================================================================
+// ===========================================================================
+// 追击 / Follow-up attacks
+// ===========================================================================
+
+/**
+ * Follow-ups are the party's team play, and the data file is where they live.
+ *
+ * Rules that make them different from a normal action, all enforced by engine
+ * rather than by convention:
+ *
+ *   `kind: 'followup'`  means the command panel never offers it and the AI
+ *                       never picks it — it only exists as an automatic
+ *                       response to a trigger.
+ *   `skillPointCost` 0  means it is free. That is the entire point: it is a
+ *                       bonus that costs no turn and no resource, so its
+ *                       per-round limit is the only thing holding it back.
+ *   `target`            is the *fallback*; a follow-up usually aims at the
+ *                       trigger's own target, resolved by the follow-up spec
+ *                       in `characters.js` (`targetFrom`).
+ *
+ * Why there are five: one per character, all wired to a *different* thing the
+ * party does. That is what turns four independent units into a party — a break
+ * cascades into two follow-ups, an ultimate into two more, a heal into a shield,
+ * and every one of those can trigger the next.
+ */
+
+define({
+  id: 'ayaha_follow_gust',
+  name: '破风二连',
+  icon: '🌪',
+  kind: 'followup',
+  element: 'wind',
+  target: 'single',
+  desc: '击破敌人后立刻补上一记风刃，并让全队的行动稍微提前。',
+  multiplier: 0.8,
+  toughness: 24,
+  effects: [
+    { type: 'damage', target: 'primary', multiplier: 0.8, toughness: 24 },
+    { type: 'advance', target: 'allAllies', amount: 0.08 },
+  ],
+});
+
+define({
+  id: 'rinne_follow_ash',
+  name: '余烬引爆',
+  icon: '💥',
+  kind: 'followup',
+  element: 'fire',
+  target: 'single',
+  desc: '击破敌人后引燃那具躯体上残留的减益。',
+  multiplier: 0.7,
+  toughness: 0,
+  effects: [
+    { type: 'detonate', target: 'primary', status: 'burn', ratio: 0.55 },
+  ],
+});
+
+define({
+  id: 'rin_follow_frost',
+  name: '霜降',
+  icon: '❄',
+  kind: 'followup',
+  element: 'ice',
+  target: 'single',
+  desc: '同伴释放终结技时，凛随手降下一层霜——冻伤标记让后面的人打得疼。',
+  multiplier: 0.75,
+  toughness: 18,
+  effects: [
+    { type: 'damage', target: 'primary', multiplier: 0.75, toughness: 18 },
+    { type: 'status', target: 'primary', status: 'vulnerability', duration: 2, chance: 0.5 },
+  ],
+});
+
+define({
+  id: 'byakuya_follow_bolt',
+  name: '雷贯',
+  icon: '⚡',
+  kind: 'followup',
+  element: 'lightning',
+  target: 'single',
+  desc: '同伴的终结技撕裂了目标——白鸦的枪尖顺着裂口钻进去，并把它往后推。',
+  multiplier: 0.9,
+  toughness: 0,
+  effects: [
+    { type: 'damage', target: 'primary', multiplier: 0.9, toughness: 0 },
+    { type: 'delay', target: 'primary', amount: 0.12 },
+  ],
+});
+
+define({
+  id: 'elise_follow_choir',
+  name: '圣咏余响',
+  icon: '✦',
+  kind: 'followup',
+  element: 'imaginary',
+  target: 'single',
+  desc: '同伴被治愈时，余音会替她挡下一部分伤害。',
+  multiplier: 0,
+  toughness: 0,
+  effects: [
+    { type: 'shield', target: 'primary', ratio: 0.30, duration: 3 },
+  ],
+});
+
 // Validation
 // ===========================================================================
 

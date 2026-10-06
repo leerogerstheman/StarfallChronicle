@@ -494,6 +494,30 @@ async function main() {
       return '取消正常';
     });
 
+    await check('道具按钮会打开道具面板并列出背包，Esc 可关闭', async () => {
+      const info = await cdp.eval(`
+        const itemBtn = [...document.querySelectorAll('#command-buttons .cmd-btn')]
+          .find(b => b.textContent.includes('道具'));
+        if (!itemBtn) throw new Error('找不到道具按钮');
+        itemBtn.click();
+        await new Promise(r => setTimeout(r, 150));
+        const open = {
+          overlay: !document.getElementById('item-overlay').classList.contains('hidden'),
+          rows: document.querySelectorAll('#item-list .item-row').length,
+          budget: document.getElementById('item-budget').textContent,
+        };
+        // Esc must close the panel (layered above the modal/target layers).
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await new Promise(r => setTimeout(r, 100));
+        return { ...open, closed: document.getElementById('item-overlay').classList.contains('hidden') };
+      `);
+      if (!info.overlay) throw new Error('道具面板未打开');
+      if (info.rows < 1) throw new Error('初始包应有治疗药水等道具，面板却是空的');
+      if (!info.budget.includes('0/')) throw new Error(`预算显示异常：${info.budget}`);
+      if (!info.closed) throw new Error('Esc 没有关闭道具面板');
+      return `面板 ${info.rows} 行，${info.budget}`;
+    });
+
     // --- Generated art ---------------------------------------------------
 
     await check('战斗里每个单位都显示真实头像，且图片确实解码成功', async () => {

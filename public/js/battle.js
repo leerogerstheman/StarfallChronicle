@@ -176,6 +176,15 @@ const BattleUI = {
       // which turns "which enemy do I hit with whom" into a glance.
       isEnemy ? this.weaknessRow(unit, view) : null,
 
+      // Affix chips. They live *above* the HP bar because they are read
+      // before combat starts — the telegraph is the tactical information.
+      isEnemy && (unit.affixes || []).length
+        ? el('div.affix-row', null, unit.affixes.map((fx) => el('span.affix-chip', {
+          title: fx.desc,
+          class: `tier-${fx.tier || 1}`,
+        }, [`${fx.icon} ${fx.name}`])))
+        : null,
+
       el('div.bar.bar-hp', { class: lowClass }, [
         el('div.bar-fill', { style: { width: `${hpRatio * 100}%` } }),
         unit.shield > 0
@@ -373,7 +382,115 @@ const BattleUI = {
       ]));
     }
 
+    // --- 道具 ---------------------------------------------------------------
+    // A command that opens the bag. The budget line lives on the button so the
+    // cap is *visible* before it bites, matching how skill buttons show their
+    // costs; `view.itemsBudget` is server-owned for exactly this reason.
+    const budget = view.itemsBudget || { used: 0, limit: 0 };
+    const bag = this.battleBag();
+    const itemsLeft = bag.reduce((n, i) => n + i.count, 0);
+    buttons.push(el('button.cmd-btn', {
+      disabled: Runtime.busy || budget.used >= budget.limit || itemsLeft === 0,
+      title: itemsLeft === 0
+        ? '背包里没有可用的道具。'
+        : `使用道具（本场已用 ${budget.used}/${budget.limit}）。`,
+      onclick: () => this.openItemPanel(),
+    }, [
+      el('span.cmd-icon', { text: '🎒' }),
+      el('span.cmd-name', { text: '道具' }),
+      el('span.cmd-cost', { text: `${budget.used}/${budget.limit}` }),
+    ]));
+
     swap($('command-buttons'), buttons);
+  },
+
+  // =======================================================================
+  // Items
+  // =======================================================================
+
+  /**
+   * The usable bag in battle. `State.view.inventory` is already the *hydrated*
+   * view (`inventoryView()` merges each slot with its item definition), so the
+   * only work here is dropping empty slots. An earlier draft re-looked the
+   * items up in the static catalog by `slot.item` — but the view carries `id`,
+   * not `item`, so every lookup missed and the button disabled itself forever.
+   */
+  battleBag() {
+    const game = State.view || {};
+    return (game.inventory || []).filter((slot) => slot && slot.id && slot.count > 0);
+  },
+
+  /**
+   * The item picker overlay. February's plan had this panel; shipping it is
+   * what makes the whole item command real rather than a server-only feature.
+   */
+  openItemPanel() {
+    const view = this.battleView() || {};
+    const bag = this.battleBag(view);
+    const budget = view.itemsBudget || { used: 0, limit: 0 };
+    const exhausted = budget.used >= budget.limit;
+    const downedTargets = (view.allies || []).filter((a) => !a.alive);
+    const overlay = $('item-overlay');
+
+    const list = bag.map((item) => {
+      const revival = item.effects && item.effects.some((e) => e.type === 'revive');
+      // A revival flask with nobody to revive is greyed out, not hidden —
+      // seeing it greyed is what teaches the player it exists for emergencies.
+      const disabled = Runtime.busy || exhausted || (revival && downedTargets.length === 0);
+      return el('div.item-row', {
+        class: disabled ? 'is-disabled' : null,
+        title: item.desc,
+        onclick: disabled ? undefined : () => this.chooseItem(item),
+      }, [
+        el('span.item-icon', { text: item.icon || '🧪' }),
+        el('div.item-info', null, [
+          el('div.item-name', { text: `${item.name} ×${item.count}` }),
+          el('div.item-desc', { text: item.desc }),
+        ]),
+      ]);
+    });
+    if (!bag.length) {
+      list.push(el('div.muted', { text: '背包空空如也。', style: { fontSize: '12px' } }));
+    }
+
+    swap($('item-list'), list);
+    $('item-budget').textContent = `本场已用 ${budget.used}/${budget.limit}`;
+    overlay.classList.remove('hidden');
+  },
+
+  closeItemPanel() {
+    $('item-overlay').classList.add('hidden');
+  },
+
+  /**
+   * Route an item through the same target prompt as a skill. Revive items
+   * target the *fallen* rows — the only shape where clicking a dead ally makes
+   * sense, and the reason `isTargetable` had to learn `downed`.
+   */
+  chooseItem(item) {
+    this.closeItemPanel();
+    if (Runtime.busy) return;
+    const actor = State.activeActor;
+    if (!actor) return;
+
+    const revival = item.effects && item.effects.some((e) => e.type === 'revive');
+    let side;
+    if (item.target === 'self') side = null;
+    else if (item.target === 'ally') side = 'ally';
+    else if (item.target === 'downed') side = 'downed';
+    else side = 'enemy';
+
+    if (!side) {
+      this.submitItem(item.id, null, actor.uid);
+      return;
+    }
+    State.pendingCommand = { type: 'item', item: item.id, side };
+    this.showTargetPrompt({ name: item.name, target: item.target }, side);
+  },
+
+  /** Item submits skip the skill plumbing entirely. */
+  async submitItem(item, target, unit) {
+    await this.submit({ type: 'item', item, target, unit });
   },
 
   // =======================================================================
@@ -383,7 +500,11 @@ const BattleUI = {
   /** Is `unit` a legal click target for the command awaiting a target? */
   isTargetable(unit) {
     const pending = State.pendingCommand;
-    if (!pending || !unit.alive) return false;
+    if (!pending) return false;
+    // Revive targeting is the one case where a *downed* row is clickable; for
+    // every other command a downed unit is as unlawful as an absent one.
+    if (pending.side === 'downed') return !unit.alive && unit.side === 'ally';
+    if (!unit.alive) return false;
     // The server's skill data says which side is legal; reuse it rather than
     // re-deriving, so the UI can never offer an illegal click.
     return pending.side === unit.side;
@@ -440,11 +561,14 @@ const BattleUI = {
 
   showTargetPrompt(skill, side, isUltimate) {
     const overlay = $('target-overlay');
-    const label = skill.target === 'aoe' ? '全体'
-      : skill.target === 'blast' ? '主目标（波及相邻）'
-        : side === 'ally' ? '选择队友' : '选择敌人';
+    const label = side === 'downed' ? '选择倒下的队友（复活）'
+      : skill.target === 'aoe' ? '全体'
+        : skill.target === 'blast' ? '主目标（波及相邻）'
+          : side === 'ally' ? '选择队友' : '选择敌人';
     $('target-hint').textContent = `${skill.name} · ${label}（Esc 取消）`;
     overlay.classList.remove('hidden');
+    // Items carry no SP cost; zeroing it here is what keeps the SP bar honest
+    // while an item prompt is open.
     State.pendingCost = skill.cost || 0;
     if (State.view) {
       this.renderField(State.view);
@@ -466,6 +590,17 @@ const BattleUI = {
     const pending = State.pendingCommand;
     if (!pending) return;
 
+    $('target-overlay').classList.add('hidden');
+    State.pendingCommand = null;
+    State.pendingCost = 0;
+
+    // Items use the item field, not the skill field; the submit envelope is
+    // otherwise identical (`type/target/unit`).
+    if (pending.type === 'item') {
+      this.submitItem(pending.item, unit.uid, State.activeActor ? State.activeActor.uid : undefined);
+      return;
+    }
+
     // AoE skills do not need a specific target, but they do need *a* target so
     // the engine can compute blast neighbours and the bounce order.
     const cmd = {
@@ -476,9 +611,6 @@ const BattleUI = {
     if (pending.type === 'ultimate') cmd.unit = pending.unitId;
     else cmd.unit = State.activeActor ? State.activeActor.uid : undefined;
 
-    $('target-overlay').classList.add('hidden');
-    State.pendingCommand = null;
-    State.pendingCost = 0;
     this.submit(cmd);
   },
 
@@ -497,6 +629,8 @@ const BattleUI = {
         skill: cmd.skill,
         target: cmd.target,
         unit: cmd.unit,
+        // Item commands carry the item id; every other command leaves it out.
+        item: cmd.type === 'item' ? cmd.item : undefined,
       };
       const res = await Api.command(State.sessionId, payload);
       State.view = res.view;
@@ -1025,6 +1159,9 @@ const BattleUI = {
   /** Rich tooltip for a unit card. */
   unitTooltip(unit, view) {
     const lines = [unit.name, `Lv ${unit.level}`, `HP ${Math.round(unit.hp)} / ${Math.round(unit.maxHp)}`];
+    if (unit.affixes && unit.affixes.length) {
+      lines.push('', ...unit.affixes.map((fx) => `${fx.icon} ${fx.name}：${fx.desc}`));
+    }
     if (unit.toughnessMax > 0) {
       lines.push(`韧性 ${unit.toughness} / ${unit.toughnessMax}${unit.broken ? '（已击破）' : ''}`);
     }

@@ -310,6 +310,17 @@ const Main = {
         ]),
       ]),
 
+      // Loot line. Shown only when something actually dropped, so it reads as
+      // a reward rather than a constant empty field.
+      (result.drops && result.drops.length)
+        ? el('div.result-drops', {
+          text: `拾获：${result.drops.map((d) => {
+            const item = ((State.data && State.data.items) || []).find((i) => i.id === d.item);
+            return `${item ? `${item.icon || ''} ${item.name}` : d.item} ×${d.count}`;
+          }).join('，')}`,
+        })
+        : null,
+
       isFinal ? el('p', {
         text: '灰烬之王倒下了。旧都的风里第一次没有焦味。',
         style: { color: 'var(--gold)', marginBottom: '18px', fontStyle: 'italic' },
@@ -412,6 +423,9 @@ const Main = {
     for (const node of document.querySelectorAll('[data-action="cancel-target"]')) {
       node.addEventListener('click', () => BattleUI.cancelTarget());
     }
+    for (const node of document.querySelectorAll('[data-action="close-item"]')) {
+      node.addEventListener('click', () => BattleUI.closeItemPanel());
+    }
     for (const node of document.querySelectorAll('[data-nav="help"]')) {
       node.addEventListener('click', () => this.openHelp());
     }
@@ -424,6 +438,13 @@ const Main = {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
       if (ev.key === 'Escape') {
+        // Close the topmost layer first: item panel above target prompt above
+        // modal, since that is the order they can be opened in.
+        const itemOverlay = $('item-overlay');
+        if (itemOverlay && !itemOverlay.classList.contains('hidden')) {
+          BattleUI.closeItemPanel();
+          return;
+        }
         if (State.pendingCommand) { BattleUI.cancelTarget(); return; }
         if (Modal.isOpen) { Modal.close(); return; }
         return;

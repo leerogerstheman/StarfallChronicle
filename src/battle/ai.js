@@ -29,7 +29,8 @@
  *   3. hard-scripted turn,
  *   4. self-destruct timer,
  *   5. gated ultimate,
- *   6. weighted random among affordable skills.
+ *   6. emergency consumable (opt-in via `ai.itemKit`),
+ *   7. weighted random among affordable skills.
  *
  * Steps 1–2 fire exactly once, tracked in `battle.flags`, so a boss cannot
  * re-trigger its phase change on every subsequent turn.
@@ -37,6 +38,7 @@
 
 const { EVENTS } = require('../core/log');
 const { getSkill } = require('../core/skills');
+const { getItem } = require('../core/items');
 const { getStatus, STATUS_CATEGORY } = require('../core/status');
 const { ACTION } = require('./action-constants');
 
@@ -120,8 +122,70 @@ function chooseEnemyAction(battle, unit, opts = {}) {
     return { type: ACTION.SKILL, skill: ultId, target: pickTarget(battle, unit, ultId, ai), reason: 'ultimate' };
   }
 
-  // --- 6. Weighted choice -------------------------------------------------
+  // --- 6. Emergency consumable -------------------------------------------
+  // Opt-in through `ai.itemKit` so nothing changes until an enemy asks for it.
+  // Placed before the weighted choice and after the finishers, because an elite
+  // gulping a potion is a real decision the player plans around — and reading
+  // it through the same telegraph channel the finishers use is what keeps the
+  // rule legible rather than feeling like a cheat.
+  //
+  // The kit is normalised once, here, so descriptors may write either
+  // `itemKit: 'heal_potion'` or `itemKit: [{ id, count }]`; the AI never
+  // consumes a real bag (enemy items come from the descriptor), so `count`
+  // means "this entry may fire at most N times" and is tracked in AI memory —
+  // mutating the shared enemy descriptor would leak between battles.
+  if (ai.itemKit && !opts.noUltimate) {
+    const kit = (Array.isArray(ai.itemKit) ? ai.itemKit : [ai.itemKit]).map(
+      (k) => (typeof k === 'string' ? { id: k } : k),
+    );
+    // Revive outranks heal: a fallen comrade is lost initiative, and a potion
+    // that arrives one round later is worthless. Each need maps to its own
+    // target — the revive must aim at the *fallen* unit, which is why the old
+    // single-target version could never fire a revive properly.
+    const fallen = battle.enemies.find((e) => !e.alive);
+    const hurt = fallen ? null : badlyHurtEnemy(battle, unit, ai.itemUseBelowHpRatio);
+    const need = fallen ? 'revival_flask' : hurt ? 'heal_potion' : null;
+    const wanted = need ? kit.find((k) => k.id === need) : null;
+    if (wanted) {
+      // Two budgets: the entry's own `count` and `itemKitLimit` for this
+      // enemy across all entries. The shared `battle.itemsUsed` counter is
+      // the *player's* budget — the enemy only respects it as a courtesy
+      // floor and never increments it (that now happens via `isEnemy`).
+      memory.kitUses = memory.kitUses || {};
+      memory.itemBudget = memory.itemBudget || 0;
+      const usedHere = memory.kitUses[wanted.id] || 0;
+      const entryLimit = wanted.count != null ? wanted.count : Infinity;
+      const totalLimit = ai.itemKitLimit != null ? ai.itemKitLimit : 2;
+      if (usedHere < entryLimit && memory.itemBudget < totalLimit && battle.itemsUsed < battle.maxItemsPerBattle) {
+        memory.kitUses[wanted.id] = usedHere + 1;
+        memory.itemBudget += 1;
+        return {
+          type: ACTION.ITEM,
+          item: wanted.id,
+          target: (fallen || hurt).uid,
+          reason: `item:${wanted.id}`,
+        };
+      }
+    }
+  }
+
+  // --- 7. Weighted choice -------------------------------------------------
   return weightedAction(battle, unit, ai, { hpRatio });
+}
+
+/**
+ * The body the AI is actually worried about, for `itemUseBelowHpRatio`.
+ *
+ * The actor itself is excluded on purpose: a monster using its own potion is
+ * merely a heal, and a heal is a weighted action, not a separate rule.
+ */
+function badlyHurtEnemy(battle, self, ratio) {
+  const threshold = ratio != null ? ratio : 0.32;
+  return battle.enemies.find((e) => {
+    if (e === self || !e.alive) return false;
+    const s = e.resolveStats();
+    return s.maxHp > 0 && e.hp / s.maxHp <= threshold;
+  }) || null;
 }
 
 /**
@@ -235,6 +299,8 @@ function isSkillUsable(battle, unit, skillId, ai) {
  * Called by `notifyTurnTaken` and by the multi-action path.
  */
 function recordSkillUse(battle, unit, skillId) {
+  // Item decisions (ACTION.ITEM) carry no skill id — nothing to cool down.
+  if (!skillId) return;
   const memory = battle.aiMemory.get(unit.uid);
   if (!memory) return;
   memory.lastUsed = memory.lastUsed || {};
@@ -310,8 +376,14 @@ function countDebuffs(unit) {
  */
 function runEnemyTurn(battle, unit) {
   const decision = chooseEnemyAction(battle, unit);
+  // Item decisions carry no skill id; `getSkill(undefined)` throws, so the
+  // announcement resolves the name by decision type. (This was a real crash in
+  // the first draft of the consumable rule.)
+  const label = decision.type === ACTION.ITEM
+    ? getItem(decision.item).name
+    : getSkill(decision.skill).name;
   battle.log.push(EVENTS.INFO, {
-    message: `${unit.name} 使用了「${getSkill(decision.skill).name}」`,
+    message: `${unit.name} 使用了「${label}」`,
     uid: unit.uid, kind: 'ai', reason: decision.reason,
   });
   battle.executeDecision(unit, decision);

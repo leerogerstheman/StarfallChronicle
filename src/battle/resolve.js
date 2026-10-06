@@ -146,9 +146,17 @@ function resolveSelector(ctx, selector) {
  * Inferred from the skill's declared shape and its effects, in that order of
  * precedence, because a skill's *intent* should win over an accident of how its
  * first effect was written:
- *   1. `skill.target` — an explicit shape ('ally', 'allyAll', 'self') is final;
- *   2. otherwise, any healing/shielding/cleansing effect implies beneficial;
+ *   1. `skill.target` — an explicit ally-side shape ('ally', 'allyAll', 'self')
+ *      is final;
+ *   2. else the effects decide, with damage beating benefit when both appear;
  *   3. otherwise hostile.
+ *
+ * Step 2 is the fix, and it has bitten twice. The shapes 'single', 'aoe',
+ * 'blast' and 'bounce' describe *how many* targets, never *which side*, so
+ * treating them as hostile short-circuits and ignores the effects entirely —
+ * which once aimed a heal at a boss, and now aimed a follow-up **shield** at a
+ * rotten grub. The default for "still ambiguous" is hostile, because healing
+ * an enemy is worse than missing a heal.
  */
 function isBeneficialSelector(skill) {
   if (!skill) return false;
@@ -157,16 +165,20 @@ function isBeneficialSelector(skill) {
     case 'allyAll':
     case 'self':
       return true;
-    case 'single':
-    case 'aoe':
-    case 'blast':
-    case 'bounce':
-      return false;
     default:
       break;
   }
-  return (skill.effects || []).some((e) =>
-    e.type === 'heal' || e.type === 'shield' || e.type === 'cleanse' || e.type === 'revive');
+
+  const effects = skill.effects || [];
+  const hasHostile = effects.some((e) =>
+    e.type === 'damage' || e.type === 'detonate' || e.type === 'summon' ||
+    e.type === 'delay' || e.type === 'toughness' || e.type === 'breakInstantly');
+  if (hasHostile) return false;
+
+  return effects.some((e) =>
+    e.type === 'heal' || e.type === 'shield' || e.type === 'cleanse' ||
+    e.type === 'revive' || e.type === 'energy' || e.type === 'advance' ||
+    e.type === 'extraTurn' || e.type === 'skillPoint');
 }
 
 /**
@@ -333,7 +345,15 @@ function applyEffect(ctx, effect, summary) {
 
     case 'revive': {
       const targets = resolveSelector(ctx, effect.target || 'primary');
-      for (const target of targets) {
+      // A 'downed' shape answers with every fallen ally; when the caster picked
+      // one of them (via a uid in the command), the *chosen* one wins so a
+      // single-use item stays single-target. No pick — or one outside the
+      // pool — falls back to the whole pool, which is the graceful reading of
+      // "revive someone".
+      const picked = targets.length > 1 && ctx.primaryTarget && targets.includes(ctx.primaryTarget)
+        ? [ctx.primaryTarget]
+        : targets;
+      for (const target of picked) {
         if (target.alive) continue;
         const stats = target.resolveStats();
         target.down = false;

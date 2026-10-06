@@ -162,6 +162,20 @@
       <button class="btn btn-small btn-ghost" data-action="cancel-target">取消 (Esc)</button>
     </div>
 
+    <!-- Item picker overlay: opened by the 道具 command; lists the run's bag -->
+    <div class="item-overlay hidden" id="item-overlay">
+      <div class="item-panel">
+        <div class="row-between" style="margin-bottom: 10px;">
+          <p class="item-title">使用道具</p>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <span class="muted" id="item-budget" style="font-size: 12px;"></span>
+            <button class="btn btn-small btn-ghost" data-action="close-item">关闭 (Esc)</button>
+          </div>
+        </div>
+        <div class="item-list" id="item-list"></div>
+      </div>
+    </div>
+
     <!-- Ultimate interrupt prompt: pulses when anyone is charged -->
     <div class="ult-alert hidden" id="ult-alert">
       <span class="ult-alert-icon">⚡</span>

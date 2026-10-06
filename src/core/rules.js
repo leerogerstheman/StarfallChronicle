@@ -197,12 +197,47 @@ const BALANCE = {
     def: 0.062,
     spd: 0.012,
   },
+
+  // --- Consumables in battle ---
+  /**
+   * The item system's pacing knob: how many consumables the *party* may use in
+   * one battle, regardless of how many are in the bag.
+   *
+   * This is the whole reason items are a decision rather than a chore. Without
+   * a cap, a potion is strictly better than spending a turn healing, and every
+   * fight degenerates into "top up between rounds". With a cap of three, an
+   * item is a resource you ration across the *run* — the question stops being
+   * "should I heal" and becomes "is this fight worth a potion I might need for
+   * the boss".
+   */
+  MAX_ITEMS_PER_BATTLE: 3,
+
+  // --- Follow-up attacks ---
+  /**
+   * Combined limit on follow-up attacks queued in a single round, across the
+   * whole party.
+   *
+   * Follow-ups are free (no skill point, no turn, no gauge reset), so a hard
+   * ceiling is what keeps them from simply becoming "everyone attacks again".
+   * Individual characters still carry their own `limitPerRound`; this is the
+   * party floor that cannot be exceeded however the specs are arranged.
+   */
+  MAX_FOLLOWUPS_PER_ROUND: 3,
+  /** A chain of follow-ups triggering further follow-ups bottoms out here. */
+  MAX_FOLLOWUP_DEPTH: 1,
+
+  // --- Elite affixes ---
+  /** How many affixes an elite draws, and how many a boss draws. */
+  AFFIXES_PER_ELITE: 1,
+  AFFIXES_PER_BOSS: 2,
 };
 
 /**
  * Damage-type tags. `skillType` on a skill decides which formula branch runs.
  */
 const SKILL_TYPES = {
+  followup: '追击',
+
   attack: '普通攻击',
   skill: '战技',
   ultimate: '终结技',

@@ -376,11 +376,53 @@ async function main() {
     return `${state.lastResult.rounds} 回合，${stats.commands} 次指令，+${state.lastResult.exp} 经验`;
   });
 
+  await check('胜利掉落进了背包（道具闭环成立）', async () => {
+    // While the result screen is still up ("继续冒险" not yet pressed): the
+    // lastResult lists what dropped, the view shows what is held. `acknowledge`
+    // clears `lastResult`, which is the case the next check exercises.
+    const state = await call('GET', `/api/state?session=${sid}`);
+    const drops = state.body.view.lastResult.drops || [];
+    const inv = state.body.view.inventory || [];
+    for (const d of drops) {
+      const slot = inv.find((e) => e.item === d.item);
+      assert(slot && slot.count >= d.count, `掉落 ${d.item}×${d.count} 应在背包中`);
+    }
+    return drops.length
+      ? `${drops.map((d) => `${d.item}×${d.count}`).join('、')} 已入包`
+      : '本场未触发掉落（概率合法）';
+  });
+
   await check('战斗胜利后可以继续探索', async () => {
     const r = await call('POST', '/api/battle/acknowledge', { session: sid });
     assert(r.status === 200, `确认失败：${r.status} ${r.text}`);
     assert(r.body.view.mode !== 'battle', '应离开战斗状态');
     return `模式 ${r.body.view.mode}`;
+  });
+
+  await check('战斗中回复药水可以走完整指令回路', async () => {
+    const sid2 = (await call('POST', '/api/session', { level: 12, gold: 9999 })).body.view.sessionId;
+    await call('POST', '/api/travel', { session: sid2, to: 'whisper_woods' });
+    const enter = await call('POST', '/api/enter', { session: sid2 });
+    assert(enter.body.view.mode === 'battle', '应进入战斗');
+    const step = await call('POST', '/api/battle/step', { session: sid2 });
+    const actor = step.body.result.actor;
+    assert(actor && actor.side === 'ally', '应有我方行动者');
+
+    // Spend one heal_potion from the starting bag on the actor itself.
+    const cmd = await call('POST', '/api/battle/command', {
+      session: sid2, type: 'item', item: 'heal_potion', target: actor.uid, unit: actor.uid,
+    });
+    assert(cmd.status === 200, `道具指令被拒绝：${cmd.status} ${cmd.text}`);
+    assert(cmd.body.view.inventory.every((e) => e.item !== 'heal_potion' || e.count <= 4),
+      '背包中的治疗药水应被消耗一个（初始 5）');
+
+    // The budget must reflect the use and reject further use at the cap.
+    const battle = cmd.body.result && cmd.body.view.battle ? cmd.body.view.battle : null;
+    if (battle) {
+      assert(battle.itemsBudget.used === 1, `本场应已用 1 个道具，实际 ${battle.itemsBudget.used}`);
+      assert(battle.itemsBudget.limit === 3, `道具上限应为 3，实际 ${battle.itemsBudget.limit}`);
+    }
+    return `治疗药水生效，${battle ? `${battle.itemsBudget.used}/${battle.itemsBudget.limit}` : '已结算'}`;
   });
 
   await check('队伍可以重新编成', async () => {
@@ -466,8 +508,10 @@ async function main() {
     assert(cont.body.view.mode === 'battle', '剧情后应进入战斗');
     const boss = cont.body.view.battle.enemies[0];
     assert(boss.name.includes('瓦尔特斯'), `应是 Boss，得到 ${boss.name}`);
-    assert(boss.toughnessMax >= 400, `Boss 韧性应厚实，得到 ${boss.toughnessMax}`);
-
+    // Bosses now roll two affixes; the only legal one that lowers toughness is
+    // `brittle` (−40% → 480 × 0.6 = 288), so anything at or above that floor
+    // means the affix pipeline applied exactly one legal stat modifier.
+    assert(boss.toughnessMax >= 288, `Boss 韧性应不低于 brittle 后的下限，得到 ${boss.toughnessMax}`);
     const { state, stats } = await autoFight(id, 2000);
     assert(state.mode !== 'battle', `战斗应结束，实际 ${state.mode}`);
     assert(state.lastResult, '应有结果');

@@ -1,6 +1,6 @@
 {
   "name": "starfall-chronicle",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Starfall Chronicle - a zero-dependency JRPG template and playable demo (Star Rail style turn order, Persona/Trails/Ys/Atelier style skills)",
   "license": "MIT",
   "private": true,

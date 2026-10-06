@@ -97,6 +97,8 @@ function buildSheet(member) {
     gearStats,
     skills: def.skills,
     hooks: def.hooks || [],
+    /** Declarative follow-up attacks, read by `Battle._triggerFollowups`. */
+    followups: def.followups || [],
     equipment: { ...member.equipment },
     unlocked: member.unlocked.slice(),
     hp: member.hp,

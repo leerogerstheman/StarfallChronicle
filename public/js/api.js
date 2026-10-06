@@ -107,6 +107,9 @@ function describeReason(reason, payload) {
     notOwned: '你还没有拥有这件装备。',
     unknownCharacter: '未知角色。',
     unknownItem: '未知道具。',
+    noItemId: '没有指定要使用的道具。',
+    notInInventory: '背包里已经没有这件道具了。',
+    itemBudget: `本场道具已用完（${payload && payload.used}/${payload && payload.limit}）。`,
     unknownEnemy: '未知敌人。',
     tooMany: '出战人数已达上限。',
     emptyParty: '至少需要一名出战角色。',
@@ -146,6 +149,9 @@ const Api = {
   step: (session) => request('POST', '/api/battle/step', { session }),
 
   command: (session, cmd) => request('POST', '/api/battle/command', { session, ...cmd }),
+  // Items travel in the same envelope as every other command — `{ type:'item',
+  // item, target, unit }` — so the API route needed no new field, only a caller.
+  item: (session, cmd) => request('POST', '/api/battle/command', { session, ...cmd }),
 
   ultimate: (session, unit, skill, target) =>
     request('POST', '/api/battle/ultimate', { session, unit, skill, target }),

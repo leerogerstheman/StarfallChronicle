@@ -116,6 +116,25 @@ const ITEMS = {
       { type: 'energy', amount: 40 },
     ],
   },
+  revival_flask: {
+    id: 'revival_flask',
+    name: '回生药剂',
+    icon: '🕯',
+    kind: 'item',
+    element: 'imaginary',
+    // 'downed' is a real skill selector (see `VALID_TARGETS`); the item *is* a
+    // skill, so targeting a fallen ally reuses the same rule with no new code.
+    target: 'downed',
+    rarity: 4,
+    price: 320,
+    desc: '复活一名倒下的队友，并回复其 50% 最大生命。全队每场限用。',
+    effects: [
+      // `target: 'downed'` is load-bearing: the `primary` selector only accepts
+      // *living* targets, so without this the flask would silently re-target a
+      // living ally and the revive would no-op past its `target.alive` guard.
+      { type: 'revive', hpRatio: 0.5, target: 'downed' },
+    ],
+  },
   smoke_bomb: {
     id: 'smoke_bomb',
     name: '烟雾弹',
