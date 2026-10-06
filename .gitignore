@@ -27,3 +27,8 @@ desktop/bin/
 .idea/
 *.swp
 *~
+
+# Release bundles are upload artefacts, not sources: the zip exists so a build
+# can be attached to a GitHub release by hand, and it is derived entirely from
+# `git ls-files` (see tools/make-release.ps1).
+StarfallChronicle-v*.zip
